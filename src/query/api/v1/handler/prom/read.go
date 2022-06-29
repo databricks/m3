@@ -111,6 +111,7 @@ func newReadHandler(
 }
 
 func (h *readHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	h.logger.Info("readHandler ServeHTTP")
 	ctx := r.Context()
 	ctx, request, err := native.ParseRequest(ctx, r, h.opts.instant, h.hOpts)
 	if err != nil {
