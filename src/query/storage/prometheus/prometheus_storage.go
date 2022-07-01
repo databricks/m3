@@ -129,6 +129,8 @@ func (q *querier) Select(
 		Interval:    time.Duration(hints.Step) * time.Millisecond,
 	}
 
+	q.logger.Info("Time Range", zap.String("start", query.Start.String()), zap.String("end", query.Start.String()))
+
 	// NB (@shreyas): The fetch options builder sets it up from the request
 	// which we do not have access to here.
 	fetchOptions, err := fetchOptions(q.ctx)
