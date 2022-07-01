@@ -131,9 +131,9 @@ func (q *querier) Select(
 	}
 
 	res := make([]zapcore.Field, len(matchers))
-	for _, m := range matchers {
-		res = append(res, zap.String(string(m.Name), string(m.Value)))
-		res = append(res, zap.Int(string(m.Name), int(m.Type)))
+	for i, m := range matchers {
+		res[i] = zap.String(string(m.Name), string(m.Value))
+		res[i] = zap.Int(string(m.Name), int(m.Type))
 	}
 
 	q.logger.Info("Matchers", res...)
