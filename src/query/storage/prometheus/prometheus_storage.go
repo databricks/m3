@@ -32,7 +32,6 @@ import (
 	"github.com/prometheus/prometheus/tsdb/chunkenc"
 	"github.com/uber-go/tally"
 	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
 
 	"github.com/m3db/m3/src/query/block"
 	"github.com/m3db/m3/src/query/generated/proto/prompb"
@@ -130,13 +129,13 @@ func (q *querier) Select(
 		Interval:    time.Duration(hints.Step) * time.Millisecond,
 	}
 
-	res := make([]zapcore.Field, len(matchers))
-	for i, m := range matchers {
-		res[i] = zap.String(string(m.Name), string(m.Value))
-		res[i] = zap.Int(string(m.Name), int(m.Type))
-	}
+	// res := make([]zapcore.Field, len(matchers))
+	// for i, m := range matchers {
+	// 	res[i] = zap.String(string(m.Name), string(m.Value))
+	// 	res[i] = zap.Int(string(m.Name), int(m.Type))
+	// }
 
-	q.logger.Info("Matchers", res...)
+	// q.logger.Info("Matchers", res...)
 
 	// NB (@shreyas): The fetch options builder sets it up from the request
 	// which we do not have access to here.
