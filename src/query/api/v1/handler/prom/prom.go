@@ -71,6 +71,7 @@ func newDefaultOptions(hOpts options.HandlerOptions) opts {
 		prometheus.PrometheusOptions{
 			Storage:           hOpts.Storage(),
 			InstrumentOptions: hOpts.InstrumentOpts(),
+			CacheOptions:      hOpts.CacheOptions(),
 		})
 	return opts{
 		queryable:  queryable,

@@ -35,6 +35,7 @@ import (
 	"github.com/m3db/m3/src/query/graphite/graphite"
 	"github.com/m3db/m3/src/query/models"
 	"github.com/m3db/m3/src/query/storage"
+	"github.com/m3db/m3/src/query/storage/cache"
 	"github.com/m3db/m3/src/query/storage/m3"
 	"github.com/m3db/m3/src/query/storage/m3/consolidators"
 	"github.com/m3db/m3/src/query/storage/m3/storagemetadata"
@@ -206,6 +207,10 @@ type Configuration struct {
 
 	// Debug configuration.
 	Debug config.DebugConfiguration `yaml:"debug"`
+
+	// Cache options //
+	// Are we enabling a cache for fetch operations?
+	CacheOptions *cache.CacheOptions `yaml:"cacheOptions"`
 }
 
 // ListenAddressOrDefault returns the listen address or default.

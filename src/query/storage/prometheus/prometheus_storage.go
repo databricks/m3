@@ -23,6 +23,7 @@ package prometheus
 import (
 	"context"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/pkg/errors"
@@ -32,12 +33,14 @@ import (
 	"github.com/prometheus/prometheus/tsdb/chunkenc"
 	"github.com/uber-go/tally"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 
 	"github.com/m3db/m3/src/query/block"
 	"github.com/m3db/m3/src/query/generated/proto/prompb"
 	"github.com/m3db/m3/src/query/models"
 	"github.com/m3db/m3/src/query/parser/promql"
 	"github.com/m3db/m3/src/query/storage"
+	"github.com/m3db/m3/src/query/storage/cache"
 	"github.com/m3db/m3/src/x/instrument"
 )
 
@@ -45,6 +48,7 @@ type prometheusQueryable struct {
 	storage storage.Storage
 	scope   tally.Scope
 	logger  *zap.Logger
+	cache   *cache.Cache
 }
 
 // PrometheusOptions are options to create a prometheus queryable backed by
@@ -52,6 +56,7 @@ type prometheusQueryable struct {
 type PrometheusOptions struct {
 	Storage           storage.Storage
 	InstrumentOptions instrument.Options
+	CacheOptions      *cache.CacheOptions
 }
 
 // StorageErr wraps all errors returned by the storage layer.
@@ -84,6 +89,7 @@ func NewPrometheusQueryable(opts PrometheusOptions) promstorage.Queryable {
 		storage: opts.Storage,
 		scope:   scope,
 		logger:  opts.InstrumentOptions.Logger(),
+		cache:   cache.NewCache(opts.CacheOptions),
 	}
 }
 
@@ -91,24 +97,27 @@ func NewPrometheusQueryable(opts PrometheusOptions) promstorage.Queryable {
 func (q *prometheusQueryable) Querier(
 	ctx context.Context, _, _ int64,
 ) (promstorage.Querier, error) {
-	return newQuerier(ctx, q.storage, q.logger), nil
+	return newQuerier(ctx, q.storage, q.logger, q.cache), nil
 }
 
 type querier struct {
 	ctx     context.Context
 	storage storage.Storage
 	logger  *zap.Logger
+	cache   *cache.Cache
 }
 
 func newQuerier(
 	ctx context.Context,
 	storage storage.Storage,
 	logger *zap.Logger,
+	cache *cache.Cache,
 ) promstorage.Querier {
 	return &querier{
 		ctx:     ctx,
 		storage: storage,
 		logger:  logger,
+		cache:   cache,
 	}
 }
 
@@ -117,6 +126,7 @@ func (q *querier) Select(
 	hints *promstorage.SelectHints,
 	labelMatchers ...*labels.Matcher,
 ) promstorage.SeriesSet {
+	start := time.Now()
 	matchers, err := promql.LabelMatchersToModelMatcher(labelMatchers, models.NewTagOptions())
 	if err != nil {
 		return promstorage.ErrSeriesSet(err)
@@ -129,13 +139,15 @@ func (q *querier) Select(
 		Interval:    time.Duration(hints.Step) * time.Millisecond,
 	}
 
-	// res := make([]zapcore.Field, len(matchers))
-	// for i, m := range matchers {
-	// 	res[i] = zap.String(string(m.Name), string(m.Value))
-	// 	res[i] = zap.Int(string(m.Name), int(m.Type))
-	// }
+	res := make([]string, len(matchers))
+	for i, m := range matchers {
+		res[i] = m.String()
+	}
+	sort.Strings(res)
 
-	// q.logger.Info("Matchers", res...)
+	label_key := strings.Join(res, ";")
+
+	q.logger.Info("fetch query", zap.String("key", label_key), zap.String("metric", res[0]), zap.Duration("range", query.End.Sub(query.Start)))
 
 	// NB (@shreyas): The fetch options builder sets it up from the request
 	// which we do not have access to here.
@@ -146,6 +158,7 @@ func (q *querier) Select(
 	}
 
 	result, err := q.storage.FetchProm(q.ctx, query, fetchOptions)
+	// result, err := q.cache.GetValue(query, label_key, q.ctx, q.storage, fetchOptions, q.logger)
 	if err != nil {
 		return promstorage.ErrSeriesSet(NewStorageErr(err))
 	}
@@ -165,6 +178,26 @@ func (q *querier) Select(
 	// Pass the result.Metadata back using the receive function.
 	// This handles concurrent updates to a single result metadata.
 	receiveResultMetadataFn(result.Metadata)
+
+	var fields []zapcore.Field
+
+	fields = append(fields, zap.String("key", label_key))
+	// if len(result.PromResult.Timeseries) != 0 {
+	// 	var tlbls []string
+	// 	for _, ts := range result.PromResult.Timeseries {
+	// 		var temps []string
+	// 		for _, lbl := range ts.Labels {
+	// 			temps = append(temps, lbl.String())
+	// 		}
+	// 		tlbls = append(tlbls, strings.Join(temps, ";"))
+	// 	}
+	// 	// fields = append(fields, zap.Int("timeseries_cnt", len(result.PromResult.Timeseries)), zap.Ints("sample_cnts", lengths), zap.Int("est_bytes", result.Metadata.FetchedBytesEstimate))
+	// 	fields = append(fields, zap.Strings("labels", tlbls))
+	// }
+	// json.Marshal(result)
+	// fields = append(fields, zap.String("prom_result", string(e)), zap.Int("prom_result_len", len(string(e))))
+	fields = append(fields, zap.Duration("elapse", time.Since(start)))
+	q.logger.Info("fetch response", fields...)
 
 	return seriesSet
 }
@@ -351,3 +384,91 @@ func validateLabelsAndMetricName(ls labels.Labels) error {
 	}
 	return nil
 }
+
+// type StoreKey struct {
+// 	Labels string
+// 	Range  int64
+// }
+
+// type StoreVal struct {
+// 	Result storage.PromResult
+// 	Minute int64
+// }
+
+// type SimpleCache struct {
+// 	Store map[StoreKey]StoreVal
+// 	mtx   sync.Mutex
+// }
+
+// func NewSimpleCache() *SimpleCache {
+// 	return &SimpleCache{
+// 		Store: make(map[StoreKey]StoreVal),
+// 	}
+// }
+
+// func (cache *SimpleCache) get(key StoreKey) (StoreVal, bool) {
+// 	cache.mtx.Lock()
+// 	if val, ok := cache.Store[key]; ok {
+// 		cache.mtx.Unlock()
+// 		return val, true
+// 	}
+// 	cache.mtx.Unlock()
+// 	return StoreVal{}, false
+// }
+
+// func (cache *SimpleCache) set(key StoreKey, val StoreVal) bool {
+// 	cache.mtx.Lock()
+
+// 	cache.Store[key] = val
+
+// 	cache.mtx.Unlock()
+// 	return true
+// }
+
+// func (cache *SimpleCache) GetValue(
+// 	q *storage.FetchQuery,
+// 	label_key string,
+// 	ctx context.Context,
+// 	st storage.Storage,
+// 	fetchOptions *storage.FetchOptions,
+// 	log *zap.Logger) (storage.PromResult, error) {
+// 	queryRange := int64(q.End.Sub(q.Start).Seconds())
+// 	key := StoreKey{
+// 		Labels: label_key,
+// 		Range:  queryRange,
+// 	}
+
+// 	minute := int64(q.Start.Minute())
+
+// 	val, ok := cache.get(key)
+// 	if ok {
+// 		if minute == val.Minute {
+// 			length := 0
+// 			if len(val.Result.PromResult.Timeseries) != 0 {
+// 				for _, ts := range val.Result.PromResult.Timeseries {
+// 					length += len(ts.Samples)
+// 				}
+// 			}
+// 			log.Info("cache hit", zap.Int64("bytes", int64(val.Result.Metadata.FetchedBytesEstimate)), zap.Int("num_samples", length))
+// 			return val.Result, nil
+// 		}
+// 	}
+
+// 	result, err := st.FetchProm(ctx, q, fetchOptions)
+// 	length := 0
+// 	if len(result.PromResult.Timeseries) != 0 {
+// 		for _, ts := range result.PromResult.Timeseries {
+// 			length += len(ts.Samples)
+// 		}
+// 	}
+// 	log.Info("cache miss", zap.Int64("minute", minute), zap.String("label_key", label_key), zap.Int64("range", queryRange), zap.Int64("bytes", int64(result.Metadata.FetchedBytesEstimate)), zap.Int("num_samples", length))
+
+// 	val = StoreVal{
+// 		Result: result,
+// 		Minute: minute,
+// 	}
+// 	if err == nil {
+// 		cache.set(key, val)
+// 	}
+// 	return result, err
+// }

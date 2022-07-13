@@ -22,6 +22,7 @@
 package options
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -41,6 +42,7 @@ import (
 	graphite "github.com/m3db/m3/src/query/graphite/storage"
 	"github.com/m3db/m3/src/query/models"
 	"github.com/m3db/m3/src/query/storage"
+	"github.com/m3db/m3/src/query/storage/cache"
 	"github.com/m3db/m3/src/query/storage/m3"
 	"github.com/m3db/m3/src/query/ts"
 	"github.com/m3db/m3/src/x/clock"
@@ -282,6 +284,8 @@ type HandlerOptions interface {
 	DefaultLookback() time.Duration
 	// SetDefaultLookback sets the default value of lookback duration.
 	SetDefaultLookback(value time.Duration) HandlerOptions
+
+	CacheOptions() *cache.CacheOptions
 }
 
 // HandlerOptions represents handler options.
@@ -316,6 +320,7 @@ type handlerOptions struct {
 	graphiteRenderRouter              GraphiteRenderRouter
 	graphiteFindRouter                GraphiteFindRouter
 	defaultLookback                   time.Duration
+	cacheOptions                      *cache.CacheOptions
 }
 
 // EmptyHandlerOptions returns  default handler options.
@@ -356,6 +361,12 @@ func NewHandlerOptions(
 	if cfg.StoreMetricsType != nil {
 		storeMetricsType = *cfg.StoreMetricsType
 	}
+	if cfg.CacheOptions != nil {
+		if cfg.CacheOptions.RedisAddress == nil {
+			return &handlerOptions{},
+				errors.New("Cache options were specified but a Redis address was not provided")
+		}
+	}
 	return &handlerOptions{
 		storage:                           downsamplerAndWriter.Storage(),
 		downsamplerAndWriter:              downsamplerAndWriter,
@@ -386,6 +397,7 @@ func NewHandlerOptions(
 		graphiteRenderRouter:              graphiteRenderRouter,
 		graphiteFindRouter:                graphiteFindRouter,
 		defaultLookback:                   defaultLookback,
+		cacheOptions:                      cfg.CacheOptions,
 	}, nil
 }
 
@@ -711,6 +723,10 @@ func (o *handlerOptions) SetDefaultLookback(value time.Duration) HandlerOptions 
 	opts := *o
 	opts.defaultLookback = value
 	return &opts
+}
+
+func (o *handlerOptions) CacheOptions() *cache.CacheOptions {
+	return o.cacheOptions
 }
 
 // KVStoreProtoParser parses protobuf messages based off specific keys.
