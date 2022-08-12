@@ -35,6 +35,7 @@ import (
 	"github.com/m3db/m3/src/query/graphite/graphite"
 	"github.com/m3db/m3/src/query/models"
 	"github.com/m3db/m3/src/query/storage"
+	"github.com/m3db/m3/src/query/storage/cache"
 	"github.com/m3db/m3/src/query/storage/m3"
 	"github.com/m3db/m3/src/query/storage/m3/consolidators"
 	"github.com/m3db/m3/src/query/storage/m3/storagemetadata"
@@ -146,8 +147,8 @@ type Configuration struct {
 	// ListenAddress is the server listen address.
 	ListenAddress *string `yaml:"listenAddress"`
 
-	// RedisAddress is the Redis address for caching.
-	RedisCacheAddress *string `yaml:"redisCacheAddress"`
+	// Specifies the settings for Redis cache-enabled coordinators
+	RedisCacheSpec *cache.RedisCacheSpec `yaml:"redisCacheSpec"`
 
 	// Filter is the read/write/complete tags filter configuration.
 	Filter FilterConfiguration `yaml:"filter"`
