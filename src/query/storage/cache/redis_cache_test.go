@@ -425,8 +425,10 @@ func TestSplitAndCombine(t *testing.T) {
 	require.True(t, resultEqual(expected, res), "Filtered result not equal")
 }
 
-// Test to check that comparison doesn't through false positives/negatives
+// Test to check that comparison doesn't mess up on false positives/negatives
 // Given that we need to make certain exceptions when checking
+// Since there can be a slight difference in the most recent time due to storing somewhat older data
+// That might not have the most recent data points (new data points will eventually show up)
 func TestCompareResults(t *testing.T) {
 	result := createEmptyPromResult()
 	result.PromResult.Timeseries = make([]*prompb.TimeSeries, 1)

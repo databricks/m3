@@ -396,6 +396,7 @@ func TestBucketWindowGet(t *testing.T) {
 		}).MaxTimes(1)
 
 	// Set it to not include all data to test that we handle offsets correctly
+	// So we request+store the first datapoint, but we don't use it
 	hints.Start = (start + 1) * 1000
 	series := q.Select(true, hints, matchers...)
 	assert.NoError(t, series.Err())
