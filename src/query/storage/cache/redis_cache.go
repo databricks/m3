@@ -105,6 +105,9 @@ type CacheMetrics struct {
 
 func NewCacheMetrics(scope tally.Scope) CacheMetrics {
 	subScope := scope.SubScope("cache")
+	// Histogram buckets range from 10^3 to 10^12 (scaled by a factor of 10 each time)
+	// Bucketting chosen to have enough buckets and a wide enough range for
+	// histogram_quantile() to be reliable
 	buckets, _ := tally.ExponentialValueBuckets(1000, 10, 10)
 	return CacheMetrics{
 		hitCounter:        subScope.Counter("hit"),
