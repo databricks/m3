@@ -98,10 +98,22 @@ type CacheMetrics struct {
 
 	checkMismatchCounter tally.Counter
 	checkTotalCounter    tally.Counter
+
+	cacheBytesRetrieved tally.Histogram
+	m3dbBytesRetrieved  tally.Histogram
+
+	cacheSetCounter     tally.Counter
+	cacheBytesSet       tally.Histogram
+	cacheSetFailCounter tally.Counter
+	cacheBytesFailSet   tally.Histogram
 }
 
 func NewCacheMetrics(scope tally.Scope) CacheMetrics {
 	subScope := scope.SubScope("cache")
+	// Histogram buckets range from 10^3 to 10^12 (scaled by a factor of 10 each time)
+	// Bucketting chosen to have enough buckets and a wide enough range for
+	// histogram_quantile() to be reliable
+	buckets, _ := tally.ExponentialValueBuckets(1000, 10, 10)
 	return CacheMetrics{
 		hitCounter:        subScope.Counter("hit"),
 		hitSamplesCounter: subScope.Counter("hit-samples"),
@@ -115,23 +127,33 @@ func NewCacheMetrics(scope tally.Scope) CacheMetrics {
 
 		checkMismatchCounter: subScope.Counter("check-mismatches"),
 		checkTotalCounter:    subScope.Counter("check-total"),
+
+		cacheBytesRetrieved: subScope.Histogram("request-bytes", buckets),
+		m3dbBytesRetrieved:  subScope.Histogram("m3db-request-bytes", buckets),
+
+		cacheSetCounter: subScope.Counter("cache-set"),
+		cacheBytesSet:   subScope.Histogram("cache-bytes-set", buckets),
+
+		cacheSetFailCounter: subScope.Counter("cache-fail-set"),
+		cacheBytesFailSet:   subScope.Histogram("cache-bytes-fail-set", buckets),
 	}
 }
 
 // Update metrics for a cache hit
 func (cm CacheMetrics) CacheMetricsHit(result storage.PromResult) {
-	// cm.hitCounter.Inc(1)
+	cm.hitCounter.Inc(1)
 	tot_samples := 0
 	for _, ts := range result.PromResult.Timeseries {
 		tot_samples += len(ts.Samples)
 	}
 	cm.hitSamplesCounter.Inc(int64(tot_samples))
 	cm.hitBytesCounter.Inc(int64(result.PromResult.Size()))
+	cm.cacheBytesRetrieved.RecordValue(float64(result.PromResult.Size()))
 }
 
 // Update metrics for a hit of buckets
 func (cm CacheMetrics) CacheMetricsBucketHit(results []*storage.PromResult) {
-	// cm.hitCounter.Inc(1)
+	cm.hitCounter.Inc(1)
 	tot_samples := 0
 	tot_size := 0
 	for _, result := range results {
@@ -142,17 +164,39 @@ func (cm CacheMetrics) CacheMetricsBucketHit(results []*storage.PromResult) {
 	}
 	cm.hitSamplesCounter.Inc(int64(tot_samples))
 	cm.hitBytesCounter.Inc(int64(tot_size))
+	cm.cacheBytesRetrieved.RecordValue(float64(tot_size))
 }
 
 // Update metrics for a cache miss
 func (cm CacheMetrics) CacheMetricsMiss(result storage.PromResult) {
-	// cm.missCounter.Inc(1)
+	cm.missCounter.Inc(1)
 	tot_samples := 0
 	for _, ts := range result.PromResult.Timeseries {
 		tot_samples += len(ts.Samples)
 	}
 	cm.missSamplesCounter.Inc(int64(tot_samples))
 	cm.missBytesCounter.Inc(int64(result.PromResult.Size()))
+	cm.m3dbBytesRetrieved.RecordValue(float64(result.PromResult.Size()))
+}
+
+// Update metrics for setting in cache
+func (cm CacheMetrics) CacheMetricsSet(results []*storage.PromResult) {
+	cm.cacheSetCounter.Inc(1)
+	tot_size := 0
+	for _, result := range results {
+		tot_size += result.PromResult.Size()
+	}
+	cm.cacheBytesSet.RecordValue(float64(tot_size))
+}
+
+// Update metrics for failing to set in cache
+func (cm CacheMetrics) CacheMetricsFailSet(results []*storage.PromResult) {
+	cm.cacheSetFailCounter.Inc(1)
+	tot_size := 0
+	for _, result := range results {
+		tot_size += result.PromResult.Size()
+	}
+	cm.cacheBytesFailSet.RecordValue(float64(tot_size))
 }
 
 // Create new RedisCache
@@ -222,7 +266,6 @@ func (cache *RedisCache) Get(entries []*storage.FetchQuery, prefix string) []*st
 		// If the response is nil (not EmptyResult), then it doesn't exist
 		if len(r) == 0 {
 			results[i] = nil
-			cache.logger.Info("cache didn't get", zap.String("key", keys[i]))
 			continue
 		}
 		// Otherwise we did find it
@@ -263,8 +306,11 @@ func (cache *RedisCache) Set(
 	// Use MSET and don't set expiration, let Redis LRU determine the process
 	if err := cache.client.Do(radix.Cmd(&response, "MSET", args...)); err != nil {
 		cache.logger.Error("Failed to execute Redis set", zap.Error(err))
+		cache.cacheMetrics.CacheMetricsFailSet(values)
 		return err
 	}
+
+	cache.cacheMetrics.CacheMetricsSet(values)
 
 	return nil
 }
@@ -429,7 +475,7 @@ func BucketWindowGetOrFetch(
 				// This is because M3DB may not have been fully filled out for this time as it is very recent
 				// We do not want to set the data if this is the case since this would lead to an incompletely filled bucket
 				// Which we would use assuming it was filled further down the line
-				if buckets[len(buckets)-1].End.Add(SetBufferTime).After(q.End) {
+				if !buckets[len(buckets)-1].End.Add(SetBufferTime).Before(q.End) {
 					buckets = buckets[:len(buckets)-1]
 				}
 				cache.SetAsBuckets(&res, buckets)
@@ -467,7 +513,7 @@ func BucketWindowGetOrFetch(
 						// This is because M3DB may not have been fully filled out for this time as it is very recent
 						// We do not want to set the data if this is the case since this would lead to an incompletely filled bucket
 						// Which we would use assuming it was filled further down the line
-						if buckets[len(buckets)-1].End.Add(SetBufferTime).After(q.End) {
+						if !buckets[len(buckets)-1].End.Add(SetBufferTime).Before(q.End) {
 							buckets = buckets[:len(buckets)-1]
 						}
 						cache.SetAsBuckets(&res, buckets)
@@ -503,10 +549,10 @@ func BucketWindowGetOrFetch(
 
 		// Get last bucket (don't set this one)
 		res, err := st.FetchProm(ctx, last_query, fetchOptions)
-		cache.cacheMetrics.CacheMetricsMiss(res)
 		if err != nil {
 			return storage.PromResult{}, nil
 		}
+		cache.cacheMetrics.CacheMetricsMiss(res)
 		// Combine all the results together
 		result := combineResult(append(results, &res))
 		CheckWithM3DB(ctx, st, fetchOptions, q, cache, result)
