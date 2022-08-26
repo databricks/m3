@@ -441,7 +441,7 @@ func BucketWindowGetOrFetch(
 				// This is because M3DB may not have been fully filled out for this time as it is very recent
 				// We do not want to set the data if this is the case since this would lead to an incompletely filled bucket
 				// Which we would use assuming it was filled further down the line
-				if buckets[len(buckets)-1].End.Add(SetBufferTime).After(q.End) {
+				if !buckets[len(buckets)-1].End.Add(SetBufferTime).Before(q.End) {
 					buckets = buckets[:len(buckets)-1]
 				}
 				cache.SetAsBuckets(&res, buckets)
@@ -479,7 +479,7 @@ func BucketWindowGetOrFetch(
 						// This is because M3DB may not have been fully filled out for this time as it is very recent
 						// We do not want to set the data if this is the case since this would lead to an incompletely filled bucket
 						// Which we would use assuming it was filled further down the line
-						if buckets[len(buckets)-1].End.Add(SetBufferTime).After(q.End) {
+						if !buckets[len(buckets)-1].End.Add(SetBufferTime).Before(q.End) {
 							buckets = buckets[:len(buckets)-1]
 						}
 						cache.SetAsBuckets(&res, buckets)
