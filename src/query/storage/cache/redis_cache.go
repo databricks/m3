@@ -102,8 +102,10 @@ type CacheMetrics struct {
 	cacheBytesRetrieved tally.Histogram
 	m3dbBytesRetrieved  tally.Histogram
 
-	cacheSetCounter tally.Counter
-	cacheBytesSet   tally.Histogram
+	cacheSetCounter     tally.Counter
+	cacheBytesSet       tally.Histogram
+	cacheSetFailCounter tally.Counter
+	cacheBytesFailSet   tally.Histogram
 }
 
 func NewCacheMetrics(scope tally.Scope) CacheMetrics {
@@ -182,6 +184,16 @@ func (cm CacheMetrics) CacheMetricsSet(results []*storage.PromResult) {
 		tot_size += result.PromResult.Size()
 	}
 	cm.cacheBytesSet.RecordValue(float64(tot_size))
+}
+
+// Update metrics for failing to set in cache
+func (cm CacheMetrics) CacheMetricsFailSet(results []*storage.PromResult) {
+	cm.cacheSetFailCounter.Inc(1)
+	tot_size := 0
+	for _, result := range results {
+		tot_size += result.PromResult.Size()
+	}
+	cm.cacheBytesFailSet.RecordValue(float64(tot_size))
 }
 
 // Create new RedisCache
@@ -291,6 +303,7 @@ func (cache *RedisCache) Set(
 	// Use MSET and don't set expiration, let Redis LRU determine the process
 	if err := cache.client.Do(radix.Cmd(&response, "MSET", args...)); err != nil {
 		cache.logger.Error("Failed to execute Redis set", zap.Error(err))
+		cache.cacheMetrics.CacheMetricsFailSet(values)
 		return err
 	}
 
