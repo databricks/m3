@@ -130,6 +130,10 @@ func TimeseriesPrint(a, b []*prompb.TimeSeries, logger *zap.Logger) {
 }
 
 // Check if lists of timeseries are equal (see samplesEqual for usage of {end} param)
+// First it checks that the number of timeseries (i.e. number of metrics) are the same
+// An exception for this is made if we have metrics that only have data past {end}
+// In which case we filter out these metrics before we compare the number of metrics
+// Then it checks that the data of the timeseries (sample + labels) are the same
 func TimeseriesEqual(a, b []*prompb.TimeSeries, end int64, logger *zap.Logger) bool {
 	// Account for case where a new timeseries has just been recently added in the time difference
 	// In this case, filter out that data and recompare
