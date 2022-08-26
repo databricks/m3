@@ -101,6 +101,9 @@ type CacheMetrics struct {
 
 	cacheBytesRetrieved tally.Histogram
 	m3dbBytesRetrieved  tally.Histogram
+
+	cacheSetCounter tally.Counter
+	cacheBytesSet   tally.Histogram
 }
 
 func NewCacheMetrics(scope tally.Scope) CacheMetrics {
@@ -125,6 +128,9 @@ func NewCacheMetrics(scope tally.Scope) CacheMetrics {
 
 		cacheBytesRetrieved: subScope.Histogram("request-bytes", buckets),
 		m3dbBytesRetrieved:  subScope.Histogram("m3db-request-bytes", buckets),
+
+		cacheSetCounter: subScope.Counter("cache-set"),
+		cacheBytesSet:   subScope.Histogram("cache-bytes-set", buckets),
 	}
 }
 
@@ -166,6 +172,16 @@ func (cm CacheMetrics) CacheMetricsMiss(result storage.PromResult) {
 	cm.missSamplesCounter.Inc(int64(tot_samples))
 	cm.missBytesCounter.Inc(int64(result.PromResult.Size()))
 	cm.m3dbBytesRetrieved.RecordValue(float64(result.PromResult.Size()))
+}
+
+// Update metrics for setting in cache
+func (cm CacheMetrics) CacheMetricsSet(results []*storage.PromResult) {
+	cm.cacheSetCounter.Inc(1)
+	tot_size := 0
+	for _, result := range results {
+		tot_size += result.PromResult.Size()
+	}
+	cm.cacheBytesSet.RecordValue(float64(tot_size))
 }
 
 // Create new RedisCache
@@ -277,6 +293,8 @@ func (cache *RedisCache) Set(
 		cache.logger.Error("Failed to execute Redis set", zap.Error(err))
 		return err
 	}
+
+	cache.cacheMetrics.CacheMetricsSet(values)
 
 	return nil
 }
