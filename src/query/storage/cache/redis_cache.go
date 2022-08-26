@@ -133,6 +133,9 @@ func NewCacheMetrics(scope tally.Scope) CacheMetrics {
 
 		cacheSetCounter: subScope.Counter("cache-set"),
 		cacheBytesSet:   subScope.Histogram("cache-bytes-set", buckets),
+
+		cacheSetFailCounter: subScope.Counter("cache-fail-set"),
+		cacheBytesFailSet:   subScope.Histogram("cache-bytes-fail-set", buckets),
 	}
 }
 
