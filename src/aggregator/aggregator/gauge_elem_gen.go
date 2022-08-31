@@ -27,6 +27,7 @@ package aggregator
 import (
 	"fmt"
 	"math"
+	"strconv"
 	"sync"
 	"time"
 
@@ -37,6 +38,7 @@ import (
 	xtime "github.com/m3db/m3/src/x/time"
 
 	"github.com/willf/bitset"
+	"go.uber.org/zap"
 )
 
 type lockedGaugeAggregation struct {
@@ -73,6 +75,8 @@ type GaugeElem struct {
 	// map of the previous consumed values for each timestamp in the buffer. needed to support binary transforms that
 	// need the value from the previous timestamp.
 	consumedValues valuesByTime
+
+	log *zap.Logger
 }
 
 // NewGaugeElem returns a new GaugeElem.
@@ -80,6 +84,7 @@ func NewGaugeElem(data ElemData, opts Options) (*GaugeElem, error) {
 	e := &GaugeElem{
 		elemBase: newElemBase(opts),
 		values:   make([]timedGauge, 0, defaultNumAggregations), // in most cases values will have two entries
+		log:      opts.InstrumentOptions().Logger(),
 	}
 	if err := e.ResetSetData(data); err != nil {
 		return nil, err
@@ -152,7 +157,7 @@ func (e *GaugeElem) AddValue(timestamp time.Time, value float64, annotation []by
 // AddUnique adds a metric value from a given source at a given timestamp.
 // If previous values from the same source have already been added to the
 // same aggregation, the incoming value is discarded.
-//nolint: dupl
+// nolint: dupl
 func (e *GaugeElem) AddUnique(
 	timestamp time.Time,
 	metric aggregated.ForwardedMetric,
@@ -213,6 +218,8 @@ func (e *GaugeElem) Consume(
 	onForwardedFlushedFn onForwardingElemFlushedFn,
 ) bool {
 	resolution := e.sp.Resolution().Window
+	//e.log.Debug("agg_test, consume, metric:" + string(e.id))
+
 	e.Lock()
 	if e.closed {
 		e.Unlock()
@@ -224,7 +231,12 @@ func (e *GaugeElem) Consume(
 	valuesForConsideration := e.values
 	e.values = e.values[:0]
 	for _, value := range valuesForConsideration {
+		//if strings.Contains(e.ID().String(), "node_network_transmit_queue_length:") {
+		//e.log.Debug("agg_test, consume value metric:" + string(e.id) + ", startNanos:" + strconv.FormatInt(value.startAtNanos, 10))
+		//}
+
 		if !isEarlierThanFn(value.startAtNanos, resolution, targetNanos) {
+			//e.log.Debug("agg_test, appended, metric:" + string(e.id) + ", targetNanos:" + strconv.FormatInt(targetNanos, 10))
 			e.values = append(e.values, value)
 			continue
 		}
@@ -244,6 +256,8 @@ func (e *GaugeElem) Consume(
 		if !expired {
 			// Keep item. Expired values are GC'd below after consuming.
 			e.values = append(e.values, value)
+		} else {
+			e.log.Debug("agg_test, data has expired, metric: " + string(e.id) + ", startNanos:" + strconv.FormatInt(value.startAtNanos, 10) + ", expiredNanos:" + strconv.FormatInt(targetNanos-e.bufferForPastTimedMetricFn(resolution).Nanoseconds(), 10) + ", timeout limit: " + strconv.FormatInt(e.bufferForPastTimedMetricFn(resolution).Nanoseconds(), 10))
 		}
 	}
 	canCollect := len(e.values) == 0 && e.tombstoned
@@ -308,6 +322,7 @@ func (e *GaugeElem) Consume(
 
 	if e.parsedPipeline.HasRollup {
 		forwardedAggregationKey, _ := e.ForwardedAggregationKey()
+		e.log.Debug("agg_test, HasRollup: " + e.parsedPipeline.Remainder.String())
 		onForwardedFlushedFn(e.onForwardedAggregationWrittenFn, forwardedAggregationKey)
 	}
 
@@ -358,6 +373,9 @@ func (e *GaugeElem) findOrCreate(
 	alignedStart int64,
 	createOpts createAggregationOptions,
 ) (*lockedGaugeAggregation, error) {
+
+	e.log.Debug("agg_test, findOrCreate:" + string(e.ID()) + ", alignedStart:" + strconv.FormatInt(alignedStart, 10))
+
 	e.RLock()
 	if e.closed {
 		e.RUnlock()

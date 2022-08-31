@@ -77,7 +77,7 @@ func (s *store) ReadRuleSet(nsName string) (rules.RuleSet, error) {
 		return nil, fmt.Errorf("could not fetch RuleSet %s: %v", nsName, err.Error())
 	}
 
-	rs, err := rules.NewRuleSetFromProto(version, &ruleSet, rules.NewOptions())
+	rs, err := rules.NewRuleSetFromProto(version, &ruleSet, rules.NewOptions(), nil)
 	if err != nil {
 		return nil, fmt.Errorf("could not fetch RuleSet %s: %v", nsName, err.Error())
 	}

@@ -93,10 +93,10 @@ func (h *WriteJSONHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.store.Write(r.Context(), writeQuery); err != nil {
-		logger := logging.WithContext(r.Context(), h.instrumentOpts)
-		logger.Error("write error",
-			zap.String("remoteAddr", r.RemoteAddr),
-			zap.Error(err))
+		//logger := logging.WithContext(r.Context(), h.instrumentOpts)
+		//logger.Error("write error",
+		//	zap.String("remoteAddr", r.RemoteAddr),
+		//	zap.Error(err))
 		xhttp.WriteError(w, err)
 	}
 }

@@ -22,6 +22,8 @@ package ingest
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"sync"
 
 	"github.com/m3db/m3/src/cmd/services/m3coordinator/downsample"
@@ -36,6 +38,7 @@ import (
 	xtime "github.com/m3db/m3/src/x/time"
 
 	"github.com/uber-go/tally"
+	"go.uber.org/zap"
 )
 
 var (
@@ -113,8 +116,8 @@ type downsamplerAndWriter struct {
 	store       storage.Storage
 	downsampler downsample.Downsampler
 	workerPool  xsync.PooledWorkerPool
-
-	metrics downsamplerAndWriterMetrics
+	logger      *zap.Logger
+	metrics     downsamplerAndWriterMetrics
 }
 
 // NewDownsamplerAndWriter creates a new downsampler and writer.
@@ -132,7 +135,24 @@ func NewDownsamplerAndWriter(
 		metrics: downsamplerAndWriterMetrics{
 			dropped: scope.Counter("metrics_dropped"),
 		},
+		logger: instrumentOpts.Logger(),
 	}
+}
+
+func (a *downsamplerAndWriter) debugLogMatch(str string) {
+	//fields := []zapcore.Field{
+	//	zap.String("tags", a.originalTags.String()),
+	//}
+	//if v := opts.RollupID; v != nil {
+	//	fields = append(fields, zap.ByteString("rollupID", v))
+	//}
+	//if v := opts.Meta; v != nil {
+	//	fields = append(fields, stagedMetadatasLogField(v))
+	//}
+	//if v := opts.StoragePolicy; v != policy.EmptyStoragePolicy {
+	//	fields = append(fields, zap.Stringer("storagePolicy", v))
+	//}
+	a.logger.Debug(str)
 }
 
 func (d *downsamplerAndWriter) Write(
@@ -149,11 +169,15 @@ func (d *downsamplerAndWriter) Write(
 	)
 
 	if d.shouldDownsample(overrides) {
+		//out, _ := json.Marshal(tags.Tags)
+		//d.logger.Debug("agg_test, should downsample metrics:" + string(out))
+		//if !strings.Contains(string(out), "node_network_transmit_queue_length") {
 		var err error
 		dropUnaggregated, err = d.writeToDownsampler(tags, datapoints, unit, annotation, overrides)
 		if err != nil {
 			multiErr = multiErr.Add(err)
 		}
+		//}
 	}
 
 	if dropUnaggregated {
@@ -316,6 +340,7 @@ func (d *downsamplerAndWriter) writeToStorage(
 		if err != nil {
 			return err
 		}
+
 		return d.store.Write(ctx, writeQuery)
 	}
 
@@ -326,6 +351,10 @@ func (d *downsamplerAndWriter) writeToStorage(
 	)
 
 	for _, p := range storagePolicies {
+
+		out, _ := json.Marshal(p)
+		d.debugLogMatch("write to storage:" + string(out))
+
 		p := p // Capture for goroutine.
 
 		wg.Add(1)
@@ -457,6 +486,13 @@ func (d *downsamplerAndWriter) writeAggregatedBatch(
 		appender.NextMetric()
 
 		value := iter.Current()
+
+		if !strings.Contains(string(value.Tags.ID()), "node_network_transmit_queue_length") && !strings.Contains(string(value.Tags.ID()), "logdaemon_numLogMessage_count") {
+			continue
+		}
+
+		//d.logger.Debug("agg_test, start to aggregate metrics:" + string(value.Tags.ID()))
+
 		if err := value.Tags.Validate(); err != nil {
 			multiErr = multiErr.Add(err)
 			continue
@@ -504,6 +540,8 @@ func (d *downsamplerAndWriter) writeAggregatedBatch(
 		}
 
 		for _, dp := range value.Datapoints {
+			//d.logger.Debug("agg_test, aggregate metrics time:" + dp.Timestamp.String())
+
 			switch value.Attributes.M3Type {
 			case ts.M3MetricTypeGauge:
 				if result.ShouldDropTimestamp {

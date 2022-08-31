@@ -48,6 +48,7 @@ type M3MsgClient struct {
 	nowFn   clock.NowFn
 	shardFn sharding.ShardFn
 	metrics m3msgClientMetrics
+	log     *zap.Logger
 }
 
 type m3msgClient struct {
@@ -90,6 +91,7 @@ func NewM3MsgClient(opts Options) (Client, error) {
 		nowFn:   opts.ClockOptions().NowFn(),
 		shardFn: opts.ShardFn(),
 		metrics: newM3msgClientMetrics(iOpts.MetricsScope(), iOpts.TimerOptions()),
+		log:     logger,
 	}, nil
 }
 
@@ -201,6 +203,8 @@ func (c *M3MsgClient) WriteTimedWithStagedMetadatas(
 			metadatas: metadatas,
 		},
 	}
+
+	//c.log.Debug("agg_test, WriteTimedWithStagedMetadatas:" + string(metric.String()))
 	err := c.write(metric.ID, payload)
 	c.metrics.writeForwarded.ReportSuccessOrError(err, c.nowFn().Sub(callStart))
 	return err
@@ -319,6 +323,7 @@ func newMessage(pool *messagePool) *message {
 }
 
 // Encode encodes a m3msg payload
+//
 //nolint:gocyclo,gocritic
 func (m *message) Encode(
 	shard uint32,

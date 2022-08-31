@@ -24,6 +24,7 @@ import (
 	"container/list"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -168,6 +169,7 @@ type baseMetricList struct {
 	timestampNanosFn timestampNanosFn
 
 	closed           bool
+	log              *zap.Logger
 	aggregations     *list.List
 	lastFlushedNanos int64
 	toCollect        []*list.Element
@@ -214,6 +216,7 @@ func newBaseMetricList(
 		timestampNanosFn: timestampNanosFn,
 		aggregations:     list.New(),
 		metrics:          newMetricListMetrics(scope),
+		log:              opts.InstrumentOptions().Logger(),
 	}
 	l.flushBeforeFn = l.flushBefore
 	l.consumeLocalMetricFn = l.consumeLocalMetric
@@ -257,6 +260,11 @@ func (l *baseMetricList) PushBack(value metricElem) (*list.Element, error) {
 		l.Unlock()
 		return nil, errListClosed
 	}
+
+	if strings.Contains(value.ID().String(), "node_network_transmit_queue_length:") {
+		l.log.Debug("agg_test, push back: " + value.ID().String())
+	}
+
 	elem := l.aggregations.PushBack(value)
 	if !hasForwardedID {
 		l.Unlock()
@@ -370,6 +378,11 @@ func (l *baseMetricList) flushBefore(beforeNanos int64, flushType flushType) {
 		// If the element is eligible for collection after the values are
 		// processed, add it to the list of elements to collect.
 		elem := e.Value.(metricElem)
+
+		if strings.Contains(elem.ID().String(), "node_network_transmit_queue_length:") {
+			l.log.Debug("agg_test, before flush back: " + elem.ID().String() + ", Type: " + string(elem.Type()))
+		}
+
 		if elem.Consume(
 			beforeNanos,
 			l.isEarlierThanFn,

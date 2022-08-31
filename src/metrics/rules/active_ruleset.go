@@ -22,9 +22,8 @@ package rules
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
-	"sort"
-
 	"github.com/m3db/m3/src/metrics/aggregation"
 	"github.com/m3db/m3/src/metrics/filters"
 	"github.com/m3db/m3/src/metrics/metadata"
@@ -34,6 +33,10 @@ import (
 	"github.com/m3db/m3/src/metrics/pipeline/applied"
 	"github.com/m3db/m3/src/query/models"
 	xerrors "github.com/m3db/m3/src/x/errors"
+	"sort"
+
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 // Matcher matches metrics against rules to determine applicable policies.
@@ -61,6 +64,7 @@ type activeRuleSet struct {
 	tagsFilterOpts  filters.TagsFilterOptions
 	newRollupIDFn   metricid.NewIDFn
 	isRollupIDFn    metricid.MatchIDFn
+	logger          *zap.Logger
 }
 
 func newActiveRuleSet(
@@ -70,6 +74,7 @@ func newActiveRuleSet(
 	tagsFilterOpts filters.TagsFilterOptions,
 	newRollupIDFn metricid.NewIDFn,
 	isRollupIDFn metricid.MatchIDFn,
+	logger *zap.Logger,
 ) *activeRuleSet {
 	uniqueCutoverTimes := make(map[int64]struct{})
 	for _, mappingRule := range mappingRules {
@@ -97,6 +102,7 @@ func newActiveRuleSet(
 		tagsFilterOpts:  tagsFilterOpts,
 		newRollupIDFn:   newRollupIDFn,
 		isRollupIDFn:    isRollupIDFn,
+		logger:          logger,
 	}
 }
 
@@ -221,6 +227,11 @@ func (as *activeRuleSet) ReverseMatch(
 	return NewMatchResult(as.version, nextCutoverNanos, forExistingID, nil, keepOriginal)
 }
 
+func stagedMetadatasLogField(sm metadata.PipelineMetadatas) zapcore.Field {
+	out, _ := json.Marshal(sm)
+	return zap.Any("pipeline:", out)
+}
+
 // NB(xichen): can further consolidate pipelines with the same aggregation ID
 // and same applied pipeline but different storage policies to reduce amount of
 // data that needed to be stored in memory and sent across the wire.
@@ -234,6 +245,13 @@ func (as *activeRuleSet) forwardMatchAt(
 		merge(rollupResults.forExistingID).
 		unique().
 		toStagedMetadata()
+
+	//out, _ := json.Marshal(rollupResults)
+	//as.logger.Debug("agg_test, rollupResults," + string(out))
+	//
+	//mapout, _ := json.Marshal(forExistingID)
+	//as.logger.Debug("agg_test, forExistingID," + string(mapout))
+
 	forNewRollupIDs := make([]IDWithMetadatas, 0, len(rollupResults.forNewRollupIDs))
 	for _, idWithMatchResult := range rollupResults.forNewRollupIDs {
 		stagedMetadata := idWithMatchResult.matchResults.unique().toStagedMetadata()
@@ -307,6 +325,10 @@ func (as *activeRuleSet) rollupResultsFor(id []byte, timeNanos int64) rollupResu
 	)
 
 	for _, rollupRule := range as.rollupRules {
+
+		//out, _ := json.Marshal(rollupRule)
+		//as.logger.Debug("agg_test, iterate rollupRules," + string(out))
+
 		snapshot := rollupRule.activeSnapshot(timeNanos)
 		if snapshot == nil {
 			continue
@@ -333,6 +355,9 @@ func (as *activeRuleSet) rollupResultsFor(id []byte, timeNanos int64) rollupResu
 		}
 
 		for _, target := range snapshot.targets {
+			//out, _ := json.Marshal(target)
+			//as.logger.Debug("agg_test, iterate target," + string(out))
+
 			rollupTargets = append(rollupTargets, target.clone())
 			tags = append(tags, snapshot.tags)
 		}
@@ -375,7 +400,9 @@ func (as *activeRuleSet) toRollupResults(
 	)
 
 	for idx, target := range targets {
+
 		pipeline := target.Pipeline
+
 		// A rollup target should always have a non-empty pipeline but
 		// just being defensive here.
 		if pipeline.IsEmpty() {
@@ -390,6 +417,10 @@ func (as *activeRuleSet) toRollupResults(
 			firstOp       = pipeline.At(0)
 			toApply       mpipeline.Pipeline
 		)
+
+		//out, _ := json.Marshal(target)
+		//as.logger.Debug("agg_test, iterate toRollupResults target," + string(out) + ", firstOp:" + firstOp.String() + ", numSteps:" + strconv.Itoa(numSteps))
+
 		switch firstOp.Type {
 		case mpipeline.AggregationOpType:
 			aggregationID, err = aggregation.CompressTypes(firstOp.Aggregation.Type)
@@ -412,6 +443,9 @@ func (as *activeRuleSet) toRollupResults(
 				tags[idx],
 				matchRollupTargetOptions{generateRollupID: true},
 			)
+
+			//as.logger.Debug("agg_test, toRollupResults target match" + strconv.FormatBool(matched) + ", rollupID:" + string(rollupID))
+
 			if !matched {
 				// The incoming metric ID did not match the rollup target.
 				continue
@@ -424,7 +458,14 @@ func (as *activeRuleSet) toRollupResults(
 			continue
 		}
 		tagPairs = tagPairs[:0]
+
+		//toApply_out, _ := json.Marshal(toApply)
+		//as.logger.Debug("agg_test, toRollupResults to apply:" + string(toApply_out))
+
 		applied, err := as.applyIDToPipeline(sortedTagPairBytes, toApply, tagPairs, tags[idx])
+
+		//as.logger.Debug("agg_test, toRollupResults applied:" + string(applied.String()))
+
 		if err != nil {
 			err = fmt.Errorf("failed to apply id %s to pipeline %v: %v", id, toApply, err)
 			multiErr = multiErr.Add(err)
@@ -436,6 +477,9 @@ func (as *activeRuleSet) toRollupResults(
 			Pipeline:        applied,
 			ResendEnabled:   target.ResendEnabled,
 		}
+
+		//as.logger.Debug("agg_test, toRollupResults pipeline: " + newPipeline.String())
+
 		if rollupID == nil {
 			// The applied pipeline applies to the incoming ID.
 			pipelines = append(pipelines, newPipeline)
@@ -448,6 +492,10 @@ func (as *activeRuleSet) toRollupResults(
 				cutoverNanos: cutoverNanos,
 				pipelines:    []metadata.PipelineMetadata{newPipeline},
 			}
+
+			//match_out, _ := json.Marshal(matchResults)
+			//as.logger.Debug("agg_test, toRollupResults matchResults," + string(match_out))
+
 			newRollupIDResult := idWithMatchResults{id: rollupID, matchResults: matchResults}
 			newRollupIDResults = append(newRollupIDResults, newRollupIDResult)
 		}
@@ -484,11 +532,18 @@ func (as *activeRuleSet) matchRollupTarget(
 		nameTagValue  []byte
 	)
 
+	//rollupOp_out, _ := json.Marshal(rollupOp)
+	//as.logger.Debug("agg_test, matchRollupTarget rollupOp_out: " + string(rollupOp_out))
+
 	defer sortedTagIter.Close()
 
 	// Iterate through each tag, looking to match it with corresponding filter tags on the rule
 	for hasMoreTags := sortedTagIter.Next(); hasMoreTags; hasMoreTags = sortedTagIter.Next() {
+
 		tagName, tagVal := sortedTagIter.Current()
+
+		//as.logger.Debug("agg_test, matchRollupTarget tagName: " + string(tagName) + ", tagVal: " + string(tagVal))
+
 		// nolint:gosimple
 		isNameTag := bytes.Compare(tagName, nameTagName) == 0
 		if isNameTag {
@@ -532,6 +587,8 @@ func (as *activeRuleSet) matchRollupTarget(
 			}
 
 			res := bytes.Compare(tagName, rollupTags[matchTagIdx])
+			//as.logger.Debug("agg_test, matchRollupTarget match: " + strconv.Itoa(res) + ", tagName" + string(tagName) + ", rollupTag:" + string(rollupTags[matchTagIdx]))
+
 			if res == 0 {
 				// Skip excluded tag.
 				matchTagIdx++
@@ -556,6 +613,10 @@ func (as *activeRuleSet) matchRollupTarget(
 	}
 
 	newName := rollupOp.NewName(nameTagValue)
+
+	//tagPairs_out, _ := json.Marshal(tagPairs)
+	//as.logger.Debug("agg_test, matchRollupTarget tagPairs: " + string(tagPairs_out))
+
 	return as.newRollupIDFn(newName, tagPairs), true
 }
 
@@ -585,6 +646,9 @@ func (as *activeRuleSet) applyIDToPipeline(
 				tags,
 				matchRollupTargetOptions{generateRollupID: true},
 			)
+			//rollupOp_out, _ := json.Marshal(rollupOp)
+			//as.logger.Debug("agg_test, applyIDToPipeline target match: " + strconv.FormatBool(matched) + ", rollupOp: " + string(rollupOp_out) + ", rollupID: " + string(rollupID))
+
 			if !matched {
 				err := fmt.Errorf("existing tag pairs %s do not contain all rollup tags %s", sortedTagPairBytes, rollupOp.Tags)
 				return applied.Pipeline{}, err
@@ -593,11 +657,16 @@ func (as *activeRuleSet) applyIDToPipeline(
 				Type:   mpipeline.RollupOpType,
 				Rollup: applied.RollupOp{ID: rollupID, AggregationID: rollupOp.AggregationID},
 			}
+
+			//as.logger.Debug("agg_test, applyIDToPipeline opUnion : " + string(opUnion.String()))
+
 		default:
 			return applied.Pipeline{}, fmt.Errorf("unexpected pipeline op type: %v", pipelineOp.Type)
 		}
 		operations = append(operations, opUnion)
 	}
+	//operations_out, _ := json.Marshal(operations)
+	//as.logger.Debug("agg_test, applyIDToPipeline opUnion : " + operations)
 	return applied.NewPipeline(operations), nil
 }
 

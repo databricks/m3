@@ -35,6 +35,7 @@ import (
 
 	"github.com/uber-go/tally"
 	"go.uber.org/atomic"
+	"go.uber.org/zap"
 )
 
 const (
@@ -162,6 +163,7 @@ type forwardedWriter struct {
 	aggregationMetrics         *forwardedAggregationMetrics
 	nowFn                      clock.NowFn
 	bufferForPastTimedMetricFn BufferForPastTimedMetricFn
+	logger                     *zap.Logger
 }
 
 func newForwardedWriter(
@@ -178,6 +180,7 @@ func newForwardedWriter(
 		aggregationMetrics:         newForwardedAggregationMetrics(scope.SubScope("aggregations")),
 		bufferForPastTimedMetricFn: opts.BufferForPastTimedMetricFn(),
 		nowFn:                      opts.ClockOptions().NowFn(),
+		logger:                     opts.InstrumentOptions().Logger(),
 	}
 }
 
@@ -195,7 +198,7 @@ func (w *forwardedWriter) Register(metric Registerable) (writeForwardedMetricFn,
 	key := newIDKey(metric.Type(), metricID)
 	fa, exists := w.aggregations[key]
 	if !exists {
-		fa = w.newForwardedAggregation(metric.Type(), metricID)
+		fa = w.newForwardedAggregation(metric.Type(), metricID, w.logger)
 		w.aggregations[key] = fa
 	}
 	if err := fa.add(metric); err != nil {
@@ -402,9 +405,10 @@ type forwardedAggregation struct {
 	onDoneFn                   onForwardedAggregationDoneFn
 	bufferForPastTimedMetricFn BufferForPastTimedMetricFn
 	nowFn                      clock.NowFn
+	logger                     *zap.Logger
 }
 
-func (w *forwardedWriter) newForwardedAggregation(metricType metric.Type, metricID id.RawID) *forwardedAggregation {
+func (w *forwardedWriter) newForwardedAggregation(metricType metric.Type, metricID id.RawID, logger *zap.Logger) *forwardedAggregation {
 	agg := &forwardedAggregation{
 		metricType:                 metricType,
 		metricID:                   metricID,
@@ -414,6 +418,7 @@ func (w *forwardedWriter) newForwardedAggregation(metricType metric.Type, metric
 		metrics:                    w.aggregationMetrics,
 		bufferForPastTimedMetricFn: w.bufferForPastTimedMetricFn,
 		nowFn:                      w.nowFn,
+		logger:                     logger,
 	}
 	agg.writeFn = agg.write
 	agg.onDoneFn = agg.onDone
@@ -499,6 +504,9 @@ func (agg *forwardedAggregation) onDone(key aggregationKey) error {
 		agg.metrics.onDoneNoWrite.Inc(1)
 		return nil
 	}
+
+	agg.logger.Debug("agg_test, onDone, aggregationKey:" + key.pipeline.String())
+
 	if agg.byKey[idx].currRefCnt == agg.byKey[idx].totalRefCnt {
 		var (
 			multiErr = xerrors.NewMultiError()
@@ -525,6 +533,9 @@ func (agg *forwardedAggregation) onDone(key aggregationKey) error {
 				Version:    b.version,
 			}
 			b.version++
+
+			agg.logger.Debug("agg_test, onDone, metric key:" + string(metric.String()))
+
 			if err := agg.client.WriteForwarded(metric, meta); err != nil {
 				multiErr = multiErr.Add(err)
 				agg.metrics.onDoneWriteErrors.Inc(1)

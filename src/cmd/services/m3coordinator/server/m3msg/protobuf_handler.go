@@ -22,6 +22,8 @@ package m3msg
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"sync"
 
 	"github.com/m3db/m3/src/metrics/encoding/protobuf"
@@ -112,14 +114,23 @@ func (h *pbHandler) Process(msg consumer.Message) {
 	h.wg.Add(1)
 	r := NewProtobufCallback(msg, dec, h.wg)
 	sp := dec.StoragePolicy()
+
 	// If storage policy is blackholed, ack the message immediately and don't
 	// bother passing down the write path.
 	for _, blackholeSp := range h.blackholePolicies {
 		if sp.Equivalent(blackholeSp) {
+			out, _ := json.Marshal(blackholeSp)
+			h.logger.Debug("dropped message:" + string(out) + ": metrics:" + string(dec.ID()))
+
 			h.m.droppedMetricBlackholePolicy.Inc(1)
 			r.Callback(OnSuccess)
 			return
 		}
+	}
+
+	if strings.Contains(string(dec.ID()), "node_network_transmit_queue_length:") {
+		out, _ := json.Marshal(sp)
+		h.logger.Debug("agg_test, process message:" + string(out) + ": metrics:" + string(dec.ID()))
 	}
 
 	h.writeFn(h.ctx, dec.ID(), dec.TimeNanos(), dec.EncodeNanos(), dec.Value(), dec.Annotation(), sp, r)

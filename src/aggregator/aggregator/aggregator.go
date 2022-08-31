@@ -342,6 +342,8 @@ func (agg *aggregator) AddTimedWithStagedMetadatas(
 		agg.metrics.addTimed.ReportError(err, agg.electionManager.ElectionState())
 		return err
 	}
+	//agg.logger.Debug("agg_test, AddTimedWithStagedMetadatas:" + string(metric.String()))
+
 	if err = shard.AddTimedWithStagedMetadatas(metric, metas); err != nil {
 		agg.metrics.addTimed.ReportError(err, agg.electionManager.ElectionState())
 		return err

@@ -37,6 +37,7 @@ import (
 	xerrors "github.com/m3db/m3/src/x/errors"
 
 	"github.com/pborman/uuid"
+	"go.uber.org/zap"
 )
 
 const (
@@ -145,10 +146,11 @@ type ruleSet struct {
 	tagsFilterOpts     filters.TagsFilterOptions
 	newRollupIDFn      metricid.NewIDFn
 	isRollupIDFn       metricid.MatchIDFn
+	log                *zap.Logger
 }
 
 // NewRuleSetFromProto creates a new RuleSet from a proto object.
-func NewRuleSetFromProto(version int, rs *rulepb.RuleSet, opts Options) (RuleSet, error) {
+func NewRuleSetFromProto(version int, rs *rulepb.RuleSet, opts Options, log *zap.Logger) (RuleSet, error) {
 	if rs == nil {
 		return nil, errNilRuleSetProto
 	}
@@ -183,6 +185,7 @@ func NewRuleSetFromProto(version int, rs *rulepb.RuleSet, opts Options) (RuleSet
 		tagsFilterOpts:     tagsFilterOpts,
 		newRollupIDFn:      opts.NewRollupIDFn(),
 		isRollupIDFn:       opts.IsRollupIDFn(),
+		log:                log,
 	}, nil
 }
 
@@ -226,6 +229,7 @@ func (rs *ruleSet) ActiveSet(timeNanos int64) Matcher {
 		rs.tagsFilterOpts,
 		rs.newRollupIDFn,
 		rs.isRollupIDFn,
+		rs.log,
 	)
 }
 

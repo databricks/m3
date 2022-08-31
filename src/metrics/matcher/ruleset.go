@@ -34,6 +34,7 @@ import (
 	"github.com/m3db/m3/src/x/instrument"
 
 	"github.com/uber-go/tally"
+	"go.uber.org/zap"
 )
 
 // RuleSet manages runtime updates to registered rules and provides
@@ -89,6 +90,7 @@ type ruleSet struct {
 	tombstoned   bool
 	matcher      rules.Matcher
 	metrics      ruleSetMetrics
+	log          *zap.Logger
 }
 
 func newRuleSet(
@@ -110,6 +112,7 @@ func newRuleSet(
 		version:            kv.UninitializedVersion,
 		metrics: newRuleSetMetrics(instrumentOpts.MetricsScope(),
 			instrumentOpts.TimerOptions()),
+		log: instrumentOpts.Logger(),
 	}
 	valueOpts := runtime.NewOptions().
 		SetInstrumentOptions(opts.InstrumentOptions()).
@@ -195,7 +198,7 @@ func (r *ruleSet) toRuleSet(value kv.Value) (interface{}, error) {
 	if err := value.Unmarshal(r.proto); err != nil {
 		return nil, err
 	}
-	return rules.NewRuleSetFromProto(value.Version(), r.proto, r.ruleSetOpts)
+	return rules.NewRuleSetFromProto(value.Version(), r.proto, r.ruleSetOpts, r.log)
 }
 
 // process processes an ruleset update.
