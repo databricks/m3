@@ -303,8 +303,8 @@ func (cache *RedisCache) Set(
 		// commands = append(commands, radix.Cmd(&response, "SET", entry, value), radix.Cmd(&response, "EXPIRE", entry, ExpirationTime))
 	}
 
-	// Use MSET and don't set expiration, let Redis LRU determine the process
-	if err := cache.client.Do(radix.Cmd(&response, "MSET", args...)); err != nil {
+	// Use MSETNX and don't set expiration, let Redis LRU determine the process
+	if err := cache.client.Do(radix.Cmd(&response, "MSETNX", args...)); err != nil {
 		cache.logger.Error("Failed to execute Redis set", zap.Error(err))
 		cache.cacheMetrics.CacheMetricsFailSet(values)
 		return err
