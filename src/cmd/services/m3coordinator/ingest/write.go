@@ -23,7 +23,6 @@ package ingest
 import (
 	"context"
 	"encoding/json"
-	"strings"
 	"sync"
 
 	"github.com/m3db/m3/src/cmd/services/m3coordinator/downsample"
@@ -487,9 +486,12 @@ func (d *downsamplerAndWriter) writeAggregatedBatch(
 
 		value := iter.Current()
 
-		if !strings.Contains(string(value.Tags.ID()), "node_network_transmit_queue_length") && !strings.Contains(string(value.Tags.ID()), "logdaemon_numLogMessage_count") {
-			continue
-		}
+		//if !strings.Contains(string(value.Tags.ID()), "node_network_transmit_queue_length:") &&
+		//	!strings.Contains(string(value.Tags.ID()), "logdaemon_numLogMessage_count") &&
+		//	!strings.Contains(string(value.Tags.ID()), "logdaemon_rateLimitRemaining_bytes") &&
+		//	!strings.Contains(string(value.Tags.ID()), "logdaemon_streamLatency_milliseconds_bucket") {
+		//	continue
+		//}
 
 		//d.logger.Debug("agg_test, start to aggregate metrics:" + string(value.Tags.ID()))
 
@@ -540,7 +542,7 @@ func (d *downsamplerAndWriter) writeAggregatedBatch(
 		}
 
 		for _, dp := range value.Datapoints {
-			//d.logger.Debug("agg_test, aggregate metrics time:" + dp.Timestamp.String())
+			//d.logger.Debug("agg_test, aggregate metrics time:" + dp.Timestamp.String() + ", tags" + value.Tags.String())
 
 			switch value.Attributes.M3Type {
 			case ts.M3MetricTypeGauge:

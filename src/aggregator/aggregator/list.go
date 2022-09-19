@@ -379,9 +379,7 @@ func (l *baseMetricList) flushBefore(beforeNanos int64, flushType flushType) {
 		// processed, add it to the list of elements to collect.
 		elem := e.Value.(metricElem)
 
-		if strings.Contains(elem.ID().String(), "node_network_transmit_queue_length:") {
-			l.log.Debug("agg_test, before flush back: " + elem.ID().String() + ", Type: " + string(elem.Type()))
-		}
+		l.log.Debug("agg_test, before flush back: " + elem.ID().String() + ", Type: " + string(elem.Type()))
 
 		if elem.Consume(
 			beforeNanos,

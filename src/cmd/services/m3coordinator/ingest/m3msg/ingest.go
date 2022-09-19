@@ -23,7 +23,6 @@ package ingestm3msg
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"github.com/m3db/m3/src/cmd/services/m3coordinator/downsample"
 	"github.com/m3db/m3/src/cmd/services/m3coordinator/server/m3msg"
 	"github.com/m3db/m3/src/metrics/metric/id"
@@ -43,9 +42,6 @@ import (
 	xtime "github.com/m3db/m3/src/x/time"
 	"github.com/uber-go/tally"
 	"go.uber.org/zap"
-	"strconv"
-	"strings"
-	"time"
 )
 
 // Options configures the ingester.
@@ -175,15 +171,17 @@ func (op *ingestOp) sample() bool {
 
 func (op *ingestOp) ingest() {
 
-	if !strings.Contains(string(op.id), "node_network_transmit_queue_length:") && !strings.Contains(string(op.id), "logdaemon_numLogMessage_count") {
-		return
-	}
-	out, _ := json.Marshal(op.sp)
-	op.logger.Debug("agg_test, write to storage:" + string(out) + ": metric: " + string(op.id) + ", metricNanos" + strconv.FormatInt(op.metricNanos, 10))
+	//if !strings.Contains(string(op.id), "node_network_transmit_queue_length:") &&
+	//	!strings.Contains(string(op.id), "logdaemon_numLogMessage_count") &&
+	//	!strings.Contains(string(op.id), "logdaemon_rateLimitRemaining_bytes") {
+	//	return
+	//}
+	//out, _ := json.Marshal(op.sp)
+	//op.logger.Debug("agg_test, write to storage:" + string(out) + ": metric: " + string(op.id) + ", metricNanos" + strconv.FormatInt(op.metricNanos, 10))
 
-	if time.Duration(time.Now().UnixNano()-op.metricNanos) < 15*time.Minute {
-		op.logger.Debug("agg_test, write to storage less than 15 min:" + string(out) + ": metric: " + string(op.id) + ", metricNanos" + strconv.FormatInt(op.metricNanos, 10))
-	}
+	//if time.Duration(time.Now().UnixNano()-op.metricNanos) < 15*time.Minute {
+	//	op.logger.Debug("agg_test, write to storage less than 15 min:" + string(out) + ": metric: " + string(op.id) + ", metricNanos" + strconv.FormatInt(op.metricNanos, 10))
+	//}
 
 	//}
 	//op.logger.Debug("agg_test, write to storage:" + string(out) + ": metric: " + string(op..id))
@@ -220,7 +218,7 @@ func (op *ingestOp) ingest() {
 		return
 	}
 	op.m.ingestSuccess.Inc(1)
-	op.logger.Debug("agg_test, write to storage succeeded:" + string(out) + ": metric: " + string(op.id) + ", metricNanos" + strconv.FormatInt(op.metricNanos, 10))
+	//op.logger.Debug("agg_test, write to storage succeeded:" + string(out) + ": metric: " + string(op.id) + ", metricNanos" + strconv.FormatInt(op.metricNanos, 10))
 
 	op.callback.Callback(m3msg.OnSuccess)
 	op.p.Put(op)

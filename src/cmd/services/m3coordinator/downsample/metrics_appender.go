@@ -259,8 +259,8 @@ func (a *metricsAppender) SamplesAppender(opts SampleAppenderOptions) (SamplesAp
 	)
 	a.mappingRuleStoragePolicies = a.mappingRuleStoragePolicies[:0]
 	if !ruleStagedMetadatas.IsDefault() && len(ruleStagedMetadatas) != 0 {
-		//a.debugLogMatch("downsampler applying matched rule",
-		//	debugLogMatchOptions{Meta: ruleStagedMetadatas})
+		a.debugLogMatch("downsampler applying matched rule",
+			debugLogMatchOptions{Meta: ruleStagedMetadatas})
 
 		// Collect storage policies for all the current active mapping rules.
 		// TODO: we should convert this to iterate over pointers
@@ -302,7 +302,7 @@ func (a *metricsAppender) SamplesAppender(opts SampleAppenderOptions) (SamplesAp
 	//    if so then skip aggregating for that storage policy.
 	//    This is what we calculated in the step above.
 	// 2. Any type of drop rule has been set. Drop rules should mean that the auto-mapping rules are ignored.
-	if !a.curr.Pipelines.IsDropPolicySet() {
+	if !a.curr.Pipelines.IsDropPolicySet() && false {
 		// No drop rule has been set as part of rule matching.
 		for idx, stagedMetadatasProto := range a.defaultStagedMetadatasProtos {
 			// NB(r): Need to take copy of default staged metadatas as we
@@ -376,10 +376,12 @@ func (a *metricsAppender) SamplesAppender(opts SampleAppenderOptions) (SamplesAp
 				a.debugLogMatch("downsampler skipping default mapping rule completely",
 					debugLogMatchOptions{Meta: stagedMetadataBeforeFilter})
 				continue
+			} else {
+				continue
 			}
 
-			//a.debugLogMatch("downsampler applying default mapping rule",
-			//	debugLogMatchOptions{Meta: stagedMetadatas})
+			a.debugLogMatch("downsampler applying default mapping rule",
+				debugLogMatchOptions{Meta: stagedMetadatas})
 
 			pipelines := stagedMetadatas[len(stagedMetadatas)-1]
 			a.curr.Pipelines = append(a.curr.Pipelines, pipelines.Pipelines...)
