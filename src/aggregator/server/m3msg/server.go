@@ -76,7 +76,8 @@ func (m *messageProcessor) handleMessage(
 	msg consumer.Message,
 ) error {
 	defer msg.Ack()
-
+	// msg is encoded raw metric + agg rules
+	m.logger.Debug("handle message", zap.Any("msg", msg))
 	// Reset and reuse the protobuf message for unpacking.
 	protobuf.ReuseMetricWithMetadatasProto(&m.pb)
 	// Unmarshal the message.

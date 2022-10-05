@@ -48,6 +48,7 @@ type M3MsgClient struct {
 	nowFn   clock.NowFn
 	shardFn sharding.ShardFn
 	metrics m3msgClientMetrics
+	logger  *zap.Logger
 }
 
 type m3msgClient struct {
@@ -90,6 +91,7 @@ func NewM3MsgClient(opts Options) (Client, error) {
 		nowFn:   opts.ClockOptions().NowFn(),
 		shardFn: opts.ShardFn(),
 		metrics: newM3msgClientMetrics(iOpts.MetricsScope(), iOpts.TimerOptions()),
+		logger:  logger,
 	}, nil
 }
 
@@ -227,15 +229,21 @@ func (c *M3MsgClient) WriteForwarded(
 //nolint:gocritic
 func (c *M3MsgClient) write(metricID id.RawID, payload payloadUnion) error {
 	shard := c.shardFn(metricID, c.m3msg.numShards)
+	c.logger.Debug("--------- m3msg client write -------", zap.Uint32("shard", shard),
+		zap.Any("metricId", metricID),
+		zap.Any("payload timed", payload.timed),
+		zap.Any("payload untimed", payload.untimed))
 
 	msg := c.m3msg.messagePool.Get()
 	if err := msg.Encode(shard, payload); err != nil {
 		msg.Finalize(producer.Dropped)
+		c.logger.Error("m3msg client write encode", zap.Error(err))
 		return err
 	}
 
 	if err := c.m3msg.producer.Produce(msg); err != nil {
 		msg.Finalize(producer.Dropped)
+		c.logger.Error("m3msg client write produce", zap.Error(err))
 		return err
 	}
 

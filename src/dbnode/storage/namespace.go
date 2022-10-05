@@ -1383,7 +1383,7 @@ func (n *dbNamespace) Snapshot(
 		}
 		snapshotBlockStarts := shard.FilterBlocksNeedSnapshot(blockStarts)
 		if len(snapshotBlockStarts) == 0 {
-			log.Debug("skipping shard snapshot since no blocks need it")
+			// log.Debug("skipping shard snapshot since no blocks need it")
 			continue
 		}
 		for _, blockStart := range snapshotBlockStarts {

@@ -108,6 +108,7 @@ type consumer struct {
 	decoder proto.Decoder
 	w       xio.ResettableWriter
 	conn    net.Conn
+	logger  *zap.Logger
 
 	ackPb            msgpb.Ack
 	closed           bool
@@ -132,7 +133,8 @@ func newConsumer(
 		rwOpts   = opts.DecoderOptions().RWOptions()
 		writerFn = rwOpts.ResettableWriterFn()
 	)
-
+	logger := opts.InstrumentOptions().Logger()
+	logger.Debug("------------- new msg consumer --------- ")
 	return &consumer{
 		opts:    opts,
 		mPool:   mPool,
@@ -146,6 +148,7 @@ func newConsumer(
 		doneCh:           make(chan struct{}),
 		m:                m,
 		messageProcessor: mp,
+		logger:           logger,
 	}
 }
 
@@ -157,6 +160,10 @@ func (c *consumer) Init() {
 	}()
 }
 func (c *consumer) process(m Message) {
+	c.logger.Debug("msg consumer process",
+		zap.Uint64("shard", m.ShardID()),
+		zap.Binary("b", m.Bytes()),
+		zap.ByteString("s", m.Bytes()))
 	c.messageProcessor.Process(m)
 }
 

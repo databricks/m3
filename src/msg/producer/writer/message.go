@@ -21,6 +21,8 @@
 package writer
 
 import (
+	"fmt"
+
 	"github.com/m3db/m3/src/msg/generated/proto/msgpb"
 	"github.com/m3db/m3/src/msg/producer"
 	"github.com/m3db/m3/src/msg/protocol/proto"
@@ -54,6 +56,11 @@ func (m *message) Set(meta metadata, rm *producer.RefCountedMessage, initNanos i
 	m.meta = meta
 	m.RefCountedMessage = rm
 	m.ToProto(&m.pb)
+}
+
+func (m *message) String() string {
+	return fmt.Sprintf("pb message: %s, meta: id=%d,shard=%d",
+		m.pb.String(), m.meta.id, m.meta.shard)
 }
 
 // Close resets the states of the message.

@@ -183,7 +183,7 @@ func (d *downsampler) Enabled() bool {
 
 func (d *downsampler) OnUpdate(namespaces m3.ClusterNamespaces) {
 	logger := d.opts.InstrumentOptions.Logger()
-
+	logger.Debug("m3 namespace updates for downsampler------", zap.Any("namespaces", namespaces))
 	if len(namespaces) == 0 {
 		logger.Debug("received empty list of namespaces. not updating staged metadata")
 		return

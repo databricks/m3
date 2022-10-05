@@ -37,6 +37,7 @@ import (
 
 	"github.com/uber-go/tally"
 	"go.uber.org/atomic"
+	"go.uber.org/zap"
 )
 
 // MessageRetryNanosFn returns the message backoff time for retry in nanoseconds.
@@ -184,6 +185,7 @@ type messageWriter struct {
 	metrics      atomic.UnsafePointer //  *messageWriterMetrics
 	nextFullScan time.Time
 	lastNewWrite *list.Element
+	logger       *zap.Logger
 
 	nowFn clock.NowFn
 }
@@ -198,6 +200,7 @@ func newMessageWriter(
 		opts = NewOptions()
 	}
 	nowFn := time.Now
+	logger := opts.InstrumentOptions().Logger()
 	mw := &messageWriter{
 		replicatedShardID:   replicatedShardID,
 		mPool:               mPool,
@@ -214,7 +217,9 @@ func newMessageWriter(
 		isClosed:            false,
 		doneCh:              make(chan struct{}),
 		nowFn:               nowFn,
+		logger:              logger,
 	}
+	logger.Debug("new message writer", zap.Any("mw", mw))
 	mw.metrics.Store(stdunsafe.Pointer(m))
 	return mw
 }
@@ -228,6 +233,9 @@ func (w *messageWriter) Write(rm *producer.RefCountedMessage) {
 		metrics  = w.Metrics()
 	)
 	w.Lock()
+	w.logger.Debug("message write 1 ---->", zap.Uint64("id", w.replicatedShardID),
+		zap.String("msg", msg.String()))
+	w.logger.Debug("rm", zap.Binary("b", rm.Bytes()), zap.ByteString("s", rm.Bytes()))
 	if !w.isValidWriteWithLock(nowNanos, metrics) {
 		w.Unlock()
 		w.close(msg)
@@ -243,6 +251,8 @@ func (w *messageWriter) Write(rm *producer.RefCountedMessage) {
 	}
 	msg.Set(meta, rm, nowNanos)
 	w.acks.add(meta, msg)
+	w.logger.Debug("message write 2 ---->", zap.Uint64("id", w.replicatedShardID),
+		zap.String("msg", msg.String()))
 	// Make sure all the new writes are ordered in queue.
 	metrics.enqueuedMessages.Inc(1)
 	if w.lastNewWrite != nil {
@@ -432,6 +442,7 @@ func (w *messageWriter) writeBatch(
 	nowFn := w.nowFn
 	for i := range messages {
 		if err := w.write(iterationIndexes, consumerWriters, metrics, messages[i]); err != nil {
+			w.logger.Error("message writer ======= error", zap.Error(err))
 			return err
 		}
 		if i%_recordMessageDelayEvery == 0 {

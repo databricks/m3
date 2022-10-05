@@ -263,7 +263,6 @@ func (h *PromWriteHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		xhttp.WriteError(w, err)
 		return
 	}
-
 	var (
 		req    = checkedReq.Request
 		opts   = checkedReq.Options
@@ -541,6 +540,9 @@ func (h *PromWriteHandler) write(
 		var errs xerrors.MultiError
 		return errs.Add(err)
 	}
+	h.instrumentOpts.Logger().Debug("write batch",
+		zap.Any("metric", r.Timeseries),
+		zap.Any("opts", opts))
 	return h.downsamplerAndWriter.WriteBatch(ctx, iter, opts)
 }
 

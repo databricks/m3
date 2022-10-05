@@ -27,6 +27,7 @@ import (
 	"github.com/m3db/m3/src/cluster/placement"
 	"github.com/m3db/m3/src/cluster/shard"
 	"github.com/m3db/m3/src/x/clock"
+	"go.uber.org/zap"
 
 	"github.com/uber-go/tally"
 )
@@ -98,6 +99,7 @@ type placementManager struct {
 	nowFn            clock.NowFn
 	instanceID       string
 	placementWatcher placement.Watcher
+	logger           *zap.Logger
 
 	state   placementManagerState
 	metrics placementManagerMetrics
@@ -111,11 +113,12 @@ func NewPlacementManager(opts PlacementManagerOptions) PlacementManager {
 		nowFn:      opts.ClockOptions().NowFn(),
 		instanceID: opts.InstanceID(),
 		ch:         make(chan struct{}, 1),
+		logger:     instrumentOpts.Logger(),
 		metrics:    newPlacementManagerMetrics(instrumentOpts.MetricsScope()),
 	}
 	mgr.placementWatcher = placement.NewPlacementsWatcher(
 		opts.WatcherOptions().SetOnPlacementChangedFn(mgr.process))
-
+	mgr.logger.Debug("new placement manager", zap.String("instanceId", mgr.instanceID))
 	return mgr
 }
 

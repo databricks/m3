@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/uber-go/tally"
+	"go.uber.org/zap"
 
 	"github.com/m3db/m3/src/metrics/aggregation"
 	"github.com/m3db/m3/src/metrics/matcher/cache"
@@ -45,6 +46,7 @@ type matcher struct {
 	namespaces Namespaces
 	cache      cache.Cache
 	metrics    matcherMetrics
+	logger     *zap.Logger
 }
 
 // NewMatcher creates a new rule matcher, optionally with a cache.
@@ -53,7 +55,8 @@ func NewMatcher(cache cache.Cache, opts Options) (Matcher, error) {
 	scope := instrumentOpts.MetricsScope()
 	iOpts := instrumentOpts.SetMetricsScope(scope.SubScope("namespaces"))
 	namespacesOpts := opts.SetInstrumentOptions(iOpts)
-
+	logger := instrumentOpts.Logger()
+	logger.Debug("new matcher", zap.Any("opts", opts))
 	if cache != nil {
 		namespacesOpts = namespacesOpts.
 			SetOnNamespaceAddedFn(func(namespace []byte, ruleSet RuleSet) {
@@ -83,6 +86,7 @@ func NewMatcher(cache cache.Cache, opts Options) (Matcher, error) {
 		namespaces: namespaces,
 		cache:      cache,
 		metrics:    newMatcherMetrics(scope.SubScope("cached-matcher")),
+		logger:     logger,
 	}, nil
 }
 

@@ -31,6 +31,7 @@ import (
 	"github.com/m3db/m3/src/metrics/metric/aggregated"
 	"github.com/m3db/m3/src/metrics/metric/unaggregated"
 	"github.com/m3db/m3/src/x/clock"
+	"go.uber.org/zap"
 
 	"github.com/uber-go/tally"
 )
@@ -93,6 +94,7 @@ type aggregatorShard struct {
 	addTimedFn                    addTimedFn
 	addTimedWithStagedMetadatasFn addTimedWithStagedMetadatasFn
 	addForwardedFn                addForwardedFn
+	logger                        *zap.Logger
 }
 
 func newAggregatorShard(shard uint32, opts Options) *aggregatorShard {
@@ -100,6 +102,7 @@ func newAggregatorShard(shard uint32, opts Options) *aggregatorShard {
 	// its own time lock to ensure for an aggregation window, all metrics
 	// owned by the shard are aggregated before they are flushed.
 	opts = opts.SetTimeLock(&sync.RWMutex{})
+	logger := opts.InstrumentOptions().Logger()
 	scope := opts.InstrumentOptions().MetricsScope().SubScope("shard").Tagged(
 		map[string]string{"shard": strconv.Itoa(int(shard))},
 	)
@@ -111,11 +114,13 @@ func newAggregatorShard(shard uint32, opts Options) *aggregatorShard {
 		metricMap:                        newMetricMap(shard, opts),
 		metrics:                          newAggregatorShardMetrics(scope),
 		latestWriteableNanos:             int64(math.MaxInt64),
+		logger:                           logger,
 	}
 	s.addUntimedFn = s.metricMap.AddUntimed
 	s.addTimedFn = s.metricMap.AddTimed
 	s.addTimedWithStagedMetadatasFn = s.metricMap.AddTimedWithStagedMetadatas
 	s.addForwardedFn = s.metricMap.AddForwarded
+	logger.Debug("newAggregatorShard", zap.Uint32("shard", shard))
 	return s
 }
 
@@ -172,6 +177,7 @@ func (s *aggregatorShard) AddUntimed(
 	metric unaggregated.MetricUnion,
 	metadatas metadata.StagedMetadatas,
 ) error {
+	s.logger.Debug("agg shard AddUntimed", zap.Uint32("shard", s.shard), zap.String("metric", metric.ID.String()))
 	s.RLock()
 	if s.closed {
 		s.RUnlock()
@@ -195,6 +201,10 @@ func (s *aggregatorShard) AddTimed(
 	metric aggregated.Metric,
 	metadata metadata.TimedMetadata,
 ) error {
+	s.logger.Debug("agg shard AddTimed",
+		zap.Uint32("shard", s.shard),
+		zap.String("metric", metric.ID.String()),
+		zap.String("agg id", metadata.AggregationID.String()))
 	s.RLock()
 	if s.closed {
 		s.RUnlock()
@@ -210,6 +220,7 @@ func (s *aggregatorShard) AddTimed(
 	if err != nil {
 		return err
 	}
+	s.logger.Debug("agg shard write success-------------")
 	s.metrics.writeSucccess.Inc(1)
 	return nil
 }
@@ -218,6 +229,9 @@ func (s *aggregatorShard) AddTimedWithStagedMetadatas(
 	metric aggregated.Metric,
 	metas metadata.StagedMetadatas,
 ) error {
+	s.logger.Debug("agg shard AddTimedWithStagedMetadatas",
+		zap.Uint32("shard", s.shard),
+		zap.String("metric", metric.ID.String()))
 	s.RLock()
 	if s.closed {
 		s.RUnlock()
@@ -233,6 +247,8 @@ func (s *aggregatorShard) AddTimedWithStagedMetadatas(
 	if err != nil {
 		return err
 	}
+	s.logger.Debug("agg shard write success-------------")
+
 	s.metrics.writeSucccess.Inc(1)
 	return nil
 }
@@ -241,6 +257,9 @@ func (s *aggregatorShard) AddForwarded(
 	metric aggregated.ForwardedMetric,
 	metadata metadata.ForwardMetadata,
 ) error {
+	s.logger.Debug("agg shard AddForwarded", zap.Uint32("shard", s.shard),
+		zap.String("metric", metric.ID.String()),
+		zap.String("agg id", metadata.AggregationID.String()))
 	s.RLock()
 	if s.closed {
 		s.RUnlock()
@@ -256,6 +275,7 @@ func (s *aggregatorShard) AddForwarded(
 	if err != nil {
 		return err
 	}
+	s.logger.Debug("agg shard write success-------------")
 	s.metrics.writeSucccess.Inc(1)
 	return nil
 }

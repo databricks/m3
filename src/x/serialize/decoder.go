@@ -26,6 +26,7 @@ import (
 
 	"github.com/m3db/m3/src/x/checked"
 	"github.com/m3db/m3/src/x/ident"
+	"go.uber.org/zap"
 )
 
 var (
@@ -48,40 +49,55 @@ type decoder struct {
 	currentTagName  checked.Bytes
 	currentTagValue checked.Bytes
 
-	opts TagDecoderOptions
-	pool TagDecoderPool
+	opts   TagDecoderOptions
+	pool   TagDecoderPool
+	logger *zap.Logger
 }
 
-func newTagDecoder(opts TagDecoderOptions, pool TagDecoderPool) TagDecoder {
+func newTagDecoder(opts TagDecoderOptions, pool TagDecoderPool, logger *zap.Logger) TagDecoder {
 	tagName := opts.CheckedBytesWrapperPool().Get(nil)
 	tagValue := opts.CheckedBytesWrapperPool().Get(nil)
 	tag := ident.Tag{
 		Name:  ident.BinaryID(tagName),
 		Value: ident.BinaryID(tagValue),
 	}
+	logger.Debug("Constuct a new decoder",
+		zap.String("tag name", tag.Name.String()),
+		zap.String("value", tag.Value.String()))
 	return &decoder{
 		opts:            opts,
 		pool:            pool,
 		current:         tag,
 		currentTagName:  tagName,
 		currentTagValue: tagValue,
+		logger:          logger,
 	}
 }
 
 func (d *decoder) Reset(b checked.Bytes) {
+	d.logger.Debug("reset with weird bytes",
+		zap.Binary("b", b.Bytes()),
+		zap.ByteString("s", b.Bytes()))
 	d.resetForReuse()
 	d.checkedData = b
 	d.checkedData.IncRef()
 	d.data = d.checkedData.Bytes()
 
+	d.logger.Debug("before decode !!!!",
+		zap.Binary("b", d.data),
+		zap.ByteString("s", d.data))
 	header, err := d.decodeUInt16()
+	d.logger.Debug("after decode !!!!",
+		zap.Binary("b", d.data),
+		zap.ByteString("s", d.data))
 	if err != nil {
 		d.err = err
 		return
 	}
 
 	if header != HeaderMagicNumber {
-		d.err = ErrIncorrectHeader
+		d.err = fmt.Errorf("ErrIncorrectHeader %b=%b, %d=%d: bytes %s",
+			header, HeaderMagicNumber, header, HeaderMagicNumber, string(d.data))
 		return
 	}
 

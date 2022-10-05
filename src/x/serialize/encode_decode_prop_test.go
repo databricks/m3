@@ -100,7 +100,7 @@ func encodeAndDecode(t ident.TagIterator) (ident.TagIterator, error) {
 	if !ok {
 		return nil, fmt.Errorf("unable to retrieve data")
 	}
-	dec := newTagDecoder(testDecodeOpts, nil)
+	dec := newTagDecoder(testDecodeOpts, nil, nil)
 	dec.Reset(data)
 	return dec, nil
 }

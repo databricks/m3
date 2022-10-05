@@ -80,6 +80,7 @@ func newIngestMetrics(scope tally.Scope) ingestMetrics {
 type Ingester struct {
 	workers xsync.PooledWorkerPool
 	p       pool.ObjectPool
+	logger  *zap.Logger
 }
 
 // NewIngester creates an ingester.
@@ -93,6 +94,7 @@ func NewIngester(
 	if tagOpts == nil {
 		tagOpts = models.NewTagOptions()
 	}
+	logger := opts.InstrumentOptions.Logger()
 	p.Init(
 		func() interface{} {
 			// NB: we don't need a pool for the tag decoder since the ops are
@@ -116,6 +118,7 @@ func NewIngester(
 	return &Ingester{
 		workers: opts.Workers,
 		p:       p,
+		logger:  logger,
 	}
 }
 
@@ -131,12 +134,13 @@ func (i *Ingester) Ingest(
 ) {
 	op := i.p.Get().(*ingestOp)
 	op.c = ctx
-	op.id = id
+	op.id = id[len("stats.gauges."):]
 	op.metricNanos = metricNanos
 	op.value = value
 	op.annotation = annotation
 	op.sp = sp
 	op.callback = callback
+	i.logger.Debug("---------------- here we are -------")
 	i.workers.Go(op.ingestFn)
 }
 
@@ -172,6 +176,7 @@ func (op *ingestOp) sample() bool {
 }
 
 func (op *ingestOp) ingest() {
+	op.logger.Debug("m3msg ingest", zap.String("id", string(op.id)))
 	if err := op.resetWriteQuery(); err != nil {
 		op.m.ingestInternalError.Inc(1)
 		op.callback.Callback(m3msg.OnRetriableError)
@@ -204,16 +209,20 @@ func (op *ingestOp) ingest() {
 		return
 	}
 	op.m.ingestSuccess.Inc(1)
+	op.logger.Debug("m3msg ingest success", zap.String("id", string(op.id)))
 	op.callback.Callback(m3msg.OnSuccess)
 	op.p.Put(op)
 }
 
 func (op *ingestOp) attempt() error {
-	return op.s.Write(op.c, &op.q)
+	err := op.s.Write(op.c, &op.q)
+	op.logger.Error("m3msg ingest attempt", zap.String("id", string(op.id)), zap.Error(err))
+	return err
 }
 
 func (op *ingestOp) resetWriteQuery() error {
 	if err := op.resetTags(); err != nil {
+		op.logger.Error("resetWriteQuery here ???? ", zap.Error(err))
 		return err
 	}
 	op.resetDataPoints()
@@ -231,12 +240,17 @@ func (op *ingestOp) resetWriteQuery() error {
 }
 
 func (op *ingestOp) resetTags() error {
+	op.logger.Debug("id array before reset", zap.ByteString("id", op.id), zap.Error(op.it.Err()))
 	op.it.Reset(op.id)
+	op.logger.Debug("id array after reset", zap.ByteString("id", op.id), zap.Error(op.it.Err()))
+	for _, tag := range op.tags.Tags {
+		op.logger.Debug("tags", zap.String("tag", tag.String()))
+	}
 	op.tags.Tags = op.tags.Tags[:0]
 	op.tags.Opts = op.tagOpts
 	for op.it.Next() {
 		name, value := op.it.Current()
-
+		op.logger.Debug("reset tags iter", zap.String("name", string(name)), zap.String("value", string(value)))
 		// TODO_FIX_GRAPHITE_TAGGING: Using this string constant to track
 		// all places worth fixing this hack. There is at least one
 		// other path where flows back to the coordinator from the aggregator

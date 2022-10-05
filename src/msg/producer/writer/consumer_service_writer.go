@@ -189,6 +189,7 @@ func (w *consumerServiceWriterImpl) Write(rm *producer.RefCountedMessage) {
 }
 
 func (w *consumerServiceWriterImpl) Init(t initType) error {
+	w.logger.Info("init ===============", zap.String("topic", w.opts.TopicName()))
 	w.wg.Add(1)
 	go func() {
 		w.reportMetrics()

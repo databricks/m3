@@ -89,12 +89,13 @@ func NewStorage(
 	if err := opts.Validate(); err != nil {
 		return nil, err
 	}
+	logger := instrumentOpts.Logger()
 
 	return &m3storage{
 		clusters: clusters,
 		opts:     opts,
 		nowFn:    time.Now,
-		logger:   instrumentOpts.Logger(),
+		logger:   logger,
 	}, nil
 }
 
@@ -796,7 +797,7 @@ func (s *m3storage) Write(
 	if query == nil {
 		return errors.ErrNilWriteQuery
 	}
-
+	s.logger.Debug("=== write data to m3 ====", zap.Any("query", query))
 	var (
 		// TODO: Pool this once an ident pool is setup. We will have
 		// to stop calling NoFinalize() below if we do that.

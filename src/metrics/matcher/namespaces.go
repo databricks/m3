@@ -276,7 +276,7 @@ func (n *namespaces) process(value interface{}) error {
 		multiErr xerrors.MultiError
 		errLock  sync.Mutex
 	)
-
+	logger := n.opts.InstrumentOptions().Logger()
 	for _, entry := range incoming.Iter() {
 		namespace, elem := entry.Key(), rules.Namespace(entry.Value())
 		nsName, snapshots := elem.Name(), elem.Snapshots()
@@ -290,7 +290,7 @@ func (n *namespaces) process(value interface{}) error {
 			n.rules.Set(namespace, ruleSet)
 			n.metrics.added.Inc(1)
 		}
-
+		logger.Debug("ruleset namespace check", zap.String("namespace", string(namespace)))
 		shouldWatch := true
 		// This should never happen but just to be on the defensive side.
 		if len(snapshots) == 0 {

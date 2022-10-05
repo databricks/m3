@@ -22,11 +22,13 @@ package serialize
 
 import (
 	"github.com/m3db/m3/src/x/pool"
+	"go.uber.org/zap"
 )
 
 type decoderPool struct {
 	decodeOpts TagDecoderOptions
 	pool       pool.ObjectPool
+	logger     *zap.Logger
 }
 
 // NewTagDecoderPool returns a new TagDecoderPool.
@@ -38,12 +40,13 @@ func NewTagDecoderPool(
 	return &decoderPool{
 		decodeOpts: dopts,
 		pool:       pool,
+		logger:     opts.InstrumentOptions().Logger(),
 	}
 }
 
 func (p *decoderPool) Init() {
 	p.pool.Init(func() interface{} {
-		return newTagDecoder(p.decodeOpts, p)
+		return newTagDecoder(p.decodeOpts, p, p.logger)
 	})
 }
 

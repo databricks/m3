@@ -157,7 +157,6 @@ func newMetricsAppender(
 // reset is called when pulled from the pool.
 func (a *metricsAppender) reset(opts metricsAppenderOptions) {
 	a.metricsAppenderOptions = opts
-
 	// Copy over any previous inuse encoders to the cached encoders list.
 	a.resetEncoders()
 
@@ -182,6 +181,7 @@ func (a *metricsAppender) AddTag(name, value []byte) {
 }
 
 func (a *metricsAppender) SamplesAppender(opts SampleAppenderOptions) (SamplesAppenderResult, error) {
+	a.logger.Debug("sample appender ingress", zap.Any("opts", opts), zap.Any("tags", a.originalTags))
 	if a.originalTags == nil {
 		return SamplesAppenderResult{}, errNoTags
 	}
@@ -223,12 +223,14 @@ func (a *metricsAppender) SamplesAppender(opts SampleAppenderOptions) (SamplesAp
 	// Encode tags and compute a temporary (unowned) ID
 	tagEncoder := a.tagEncoder()
 	if err := tagEncoder.Encode(tags); err != nil {
+		a.logger.Error("tag encoder error", zap.Error(err))
 		return SamplesAppenderResult{}, err
 	}
 	data, ok := tagEncoder.Data()
 	if !ok {
-		return SamplesAppenderResult{}, fmt.Errorf("unable to encode tags: names=%v, values=%v",
-			tags.names, tags.values)
+		err := fmt.Errorf("unable to encode tags: names=%v, values=%v", tags.names, tags.values)
+		a.logger.Error("tag encoder error", zap.Error(err))
+		return SamplesAppenderResult{}, err
 	}
 
 	a.multiSamplesAppender.reset()
@@ -246,7 +248,9 @@ func (a *metricsAppender) SamplesAppender(opts SampleAppenderOptions) (SamplesAp
 		NameAndTagsFn:       a.nameTagFn,
 		SortedTagIteratorFn: a.tagIterFn,
 	})
+	a.logger.Debug("match result", zap.Any("res", matchResult))
 	if err != nil {
+		a.logger.Error("match error", zap.Error(err))
 		return SamplesAppenderResult{}, err
 	}
 
@@ -261,6 +265,7 @@ func (a *metricsAppender) SamplesAppender(opts SampleAppenderOptions) (SamplesAp
 	// First, process any override explicitly provided as part of request
 	// (via request headers that specify target namespaces).
 	if opts.Override {
+		a.logger.Debug("has overrides====")
 		for _, rule := range opts.OverrideRules.MappingRules {
 			stagedMetadatas, err := rule.StagedMetadatas()
 			if err != nil {
@@ -295,6 +300,9 @@ func (a *metricsAppender) SamplesAppender(opts SampleAppenderOptions) (SamplesAp
 		dropTimestamp       bool
 	)
 	a.mappingRuleStoragePolicies = a.mappingRuleStoragePolicies[:0]
+	a.logger.Debug("------ruleStagedMetadatas", zap.Bool("default", ruleStagedMetadatas.IsDefault()),
+		zap.Uint("dropApplyResult", uint(dropApplyResult)),
+		zap.Any("ruleStagedMetadatas", ruleStagedMetadatas))
 	if !ruleStagedMetadatas.IsDefault() && len(ruleStagedMetadatas) != 0 {
 		a.debugLogMatch("downsampler applying matched rule",
 			debugLogMatchOptions{Meta: ruleStagedMetadatas})
@@ -336,6 +344,7 @@ func (a *metricsAppender) SamplesAppender(opts SampleAppenderOptions) (SamplesAp
 	// 2. Any type of drop rule has been set. Drop rules should mean that the auto-mapping rules are ignored.
 	// 3. Aggregate default metric when only downsample option is enable
 	if opts.downsampleAll && !a.curr.Pipelines.IsDropPolicySet() {
+		a.logger.Debug("drop metrics", zap.Bool("downsample all", opts.downsampleAll))
 		// No drop rule has been set as part of rule matching.
 		for idx, stagedMetadatasProto := range a.defaultStagedMetadatasProtos {
 			// NB(r): Need to take copy of default staged metadatas as we
@@ -438,12 +447,14 @@ func (a *metricsAppender) SamplesAppender(opts SampleAppenderOptions) (SamplesAp
 			debugLogMatchOptions{Meta: []metadata.StagedMetadata{a.curr}})
 
 		if err := a.addSamplesAppenders(tags, a.curr); err != nil {
+			a.logger.Error("add ample appender", zap.Error(err))
 			return SamplesAppenderResult{}, err
 		}
 	}
 
 	// Finally, process and deliver staged metadata resulting from rollup rules.
 	numRollups := matchResult.NumNewRollupIDs()
+	a.logger.Debug("check roll up rules", zap.Int("rules", numRollups))
 	for i := 0; i < numRollups; i++ {
 		rollup := matchResult.ForNewRollupIDsAt(i, nowNanos)
 

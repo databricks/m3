@@ -30,6 +30,7 @@ import (
 	"github.com/m3db/m3/src/metrics/metric/id"
 	"github.com/m3db/m3/src/metrics/rules"
 	"github.com/m3db/m3/src/x/clock"
+	"go.uber.org/zap"
 
 	"github.com/uber-go/tally"
 )
@@ -140,6 +141,7 @@ type cache struct {
 	closed     bool
 	closedCh   chan struct{}
 	metrics    cacheMetrics
+	logger     *zap.Logger
 }
 
 // NewCache creates a new cache.
@@ -161,6 +163,7 @@ func NewCache(opts Options) Cache {
 		closedCh:          make(chan struct{}),
 		metrics:           newCacheMetrics(instrumentOpts.MetricsScope()),
 		nsResolver:        opts.NamespaceResolver(),
+		logger:            instrumentOpts.Logger(),
 	}
 
 	c.wgWorker.Add(numOngoingTasks)
@@ -173,6 +176,7 @@ func NewCache(opts Options) Cache {
 func (c *cache) ForwardMatch(id id.ID, fromNanos, toNanos int64,
 	opts rules.MatchOptions) (rules.MatchResult, error) {
 	namespace := c.nsResolver.Resolve(id)
+	c.logger.Debug("cache forward match", zap.String("ns", string(namespace)), zap.String("id", string(id.Bytes())))
 	c.RLock()
 	res, found, err := c.tryGetWithLock(namespace, id, fromNanos, toNanos, dontSetIfNotFound, opts)
 	c.RUnlock()
@@ -195,7 +199,8 @@ func (c *cache) ForwardMatch(id id.ID, fromNanos, toNanos int64,
 func (c *cache) Register(namespace []byte, source rules.Matcher) {
 	c.Lock()
 	defer c.Unlock()
-
+	c.logger.Sugar().Debug("register new rule matcher",
+		zap.String("ns", string(namespace)), zap.Any("rule", source))
 	if results, exist := c.namespaces.Get(namespace); !exist {
 		c.namespaces.Set(namespace, newResults(source))
 		c.metrics.registers.Inc(1)

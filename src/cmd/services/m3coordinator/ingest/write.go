@@ -34,6 +34,7 @@ import (
 	"github.com/m3db/m3/src/x/instrument"
 	xsync "github.com/m3db/m3/src/x/sync"
 	xtime "github.com/m3db/m3/src/x/time"
+	"go.uber.org/zap"
 
 	"github.com/uber-go/tally"
 )
@@ -136,8 +137,8 @@ type downsamplerAndWriter struct {
 	store       storage.Storage
 	downsampler downsample.Downsampler
 	workerPool  xsync.PooledWorkerPool
-
-	metrics downsamplerAndWriterMetrics
+	logger      *zap.Logger
+	metrics     downsamplerAndWriterMetrics
 }
 
 // NewDownsamplerAndWriter creates a new downsampler and writer.
@@ -153,6 +154,7 @@ func NewDownsamplerAndWriter(
 		store:       store,
 		downsampler: downsampler,
 		workerPool:  workerPool,
+		logger:      instrumentOpts.Logger(),
 		metrics: downsamplerAndWriterMetrics{
 			dropped: newMetricsBySource(scope, "metrics_dropped"),
 			written: newMetricsBySource(scope, "metrics_written"),
@@ -248,6 +250,9 @@ func (d *downsamplerAndWriter) shouldDownsample(
 	// Only downsample if the downsampler is enabled, and they either want to use the default mapping
 	// rules, or they're trying to override the mapping rules and they've provided at least one
 	// override to do so.
+	d.logger.Debug("should downsample", zap.Bool("enable", d.downsampler.Enabled()),
+		zap.Bool("default", useDefaultMappingRules),
+		zap.Bool("override", downsampleOverride))
 	return d.downsampler.Enabled() && (useDefaultMappingRules || downsampleOverride)
 }
 
@@ -300,6 +305,7 @@ func (d *downsamplerAndWriter) writeToDownsampler(
 	// NB: we don't set series attributes on the sample appender options here.
 	// In practice this isn't needed because only the carbon ingest path comes through here.
 	var appenderOpts downsample.SampleAppenderOptions
+
 	if downsampleMappingRuleOverrides, ok := d.downsampleOverrideRules(overrides); ok {
 		appenderOpts = downsample.SampleAppenderOptions{
 			Override: true,
@@ -311,6 +317,7 @@ func (d *downsamplerAndWriter) writeToDownsampler(
 
 	result, err := appender.SamplesAppender(appenderOpts)
 	if err != nil {
+		d.logger.Error("no result", zap.Error(err))
 		return false, err
 	}
 
@@ -538,7 +545,9 @@ func (d *downsamplerAndWriter) writeAggregatedBatch(
 		}
 
 		result, err := appender.SamplesAppender(opts)
+		d.logger.Debug("finished sample appender 000000", zap.Any("result", result))
 		if err != nil {
+			d.logger.Error("sample appender error", zap.Error(err))
 			multiErr = multiErr.Add(err)
 			continue
 		}
@@ -548,6 +557,9 @@ func (d *downsamplerAndWriter) writeAggregatedBatch(
 		}
 
 		for _, dp := range value.Datapoints {
+			d.logger.Debug("iterate over datapoints",
+				zap.Bool("should drop timestamp", result.ShouldDropTimestamp),
+				zap.Uint8("m3 type", uint8(value.Attributes.M3Type)))
 			switch value.Attributes.M3Type {
 			case ts.M3MetricTypeGauge:
 				if result.ShouldDropTimestamp {

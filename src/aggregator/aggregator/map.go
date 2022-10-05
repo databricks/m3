@@ -36,6 +36,7 @@ import (
 	"github.com/m3db/m3/src/x/clock"
 	xresource "github.com/m3db/m3/src/x/resource"
 	xtime "github.com/m3db/m3/src/x/time"
+	"go.uber.org/zap"
 
 	"github.com/uber-go/tally"
 )
@@ -229,6 +230,8 @@ func (m *metricMap) AddForwarded(
 		metricType:     metricType(metric.Type),
 		idHash:         hash.Murmur3Hash128(metric.ID),
 	}
+	m.opts.InstrumentOptions().Logger().Debug("add forwarded",
+		zap.Binary("b", metric.ID), zap.ByteString("s", metric.ID))
 	entry, err := m.findOrCreate(key)
 	if err != nil {
 		return err

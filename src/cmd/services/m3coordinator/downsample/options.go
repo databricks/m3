@@ -69,6 +69,7 @@ import (
 	"github.com/m3db/m3/src/x/serialize"
 	xsync "github.com/m3db/m3/src/x/sync"
 	xtime "github.com/m3db/m3/src/x/time"
+	"go.uber.org/zap"
 
 	"github.com/pborman/uuid"
 	"github.com/prometheus/common/model"
@@ -699,6 +700,8 @@ func (cfg Configuration) NewDownsampler(
 ) (Downsampler, error) {
 	agg, err := cfg.newAggregator(opts)
 	if err != nil {
+		logger := opts.InstrumentOptions.Logger()
+		logger.Error("error creating new aggregator", zap.Error(err))
 		return nil, err
 	}
 
@@ -789,6 +792,7 @@ func (cfg Configuration) newAggregator(o DownsamplerOptions) (agg, error) {
 			if err != nil {
 				return agg{}, err
 			}
+			logger.Debug("registered mapping rule", zap.String("name", rule.Name))
 		}
 
 		for _, rollupRule := range cfg.Rules.RollupRules {
@@ -801,6 +805,7 @@ func (cfg Configuration) newAggregator(o DownsamplerOptions) (agg, error) {
 			if err != nil {
 				return agg{}, err
 			}
+			logger.Debug("registered rollup rule", zap.String("name", rule.Name))
 		}
 
 		if err := rulesStore.WriteAll(ruleNamespaces, rs); err != nil {

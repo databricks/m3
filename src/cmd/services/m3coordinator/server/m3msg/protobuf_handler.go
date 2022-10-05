@@ -51,7 +51,7 @@ type handlerMetrics struct {
 func newHandlerMetrics(scope tally.Scope) handlerMetrics {
 	messageScope := scope.SubScope("metric")
 	return handlerMetrics{
-		metricAccepted:   messageScope.Counter("accepted"),
+		metricAccepted: messageScope.Counter("accepted"),
 		droppedMetricDecodeError: messageScope.Tagged(map[string]string{
 			"reason": "decode-error",
 		}).Counter("dropped"),
@@ -105,6 +105,11 @@ func (h *pbHandler) Process(msg consumer.Message) {
 		h.m.droppedMetricDecodeError.Inc(1)
 		return
 	}
+	h.logger.Debug("after decode",
+		zap.String("decode id", string(dec.ID())),
+		zap.Uint64("shard", msg.ShardID()),
+		zap.Binary("b", msg.Bytes()),
+		zap.ByteString("s", msg.Bytes()))
 	h.m.metricAccepted.Inc(1)
 
 	h.wg.Add(1)
@@ -119,7 +124,7 @@ func (h *pbHandler) Process(msg consumer.Message) {
 			return
 		}
 	}
-
+	h.logger.Debug("----------before ingest.Ingest------------")
 	h.writeFn(h.ctx, dec.ID(), dec.TimeNanos(), dec.EncodeNanos(), dec.Value(), dec.Annotation(), sp, r)
 }
 
