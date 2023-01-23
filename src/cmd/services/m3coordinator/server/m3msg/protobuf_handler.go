@@ -128,7 +128,7 @@ func (h *pbHandler) Process(msg consumer.Message) {
 		}
 	}
 
-	if strings.Contains(string(dec.ID()), "node_network_transmit_queue_length:") {
+	if strings.Contains(string(dec.ID()), "rulemanager_latest_rule_evaluation_time") {
 		out, _ := json.Marshal(sp)
 		h.logger.Debug("agg_test, process message:" + string(out) + ": metrics:" + string(dec.ID()))
 	}

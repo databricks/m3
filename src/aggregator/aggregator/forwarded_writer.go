@@ -23,6 +23,8 @@ package aggregator
 import (
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/m3db/m3/src/aggregator/client"
 	"github.com/m3db/m3/src/aggregator/hash"
@@ -505,7 +507,7 @@ func (agg *forwardedAggregation) onDone(key aggregationKey) error {
 		return nil
 	}
 
-	agg.logger.Debug("agg_test, onDone, aggregationKey:" + key.pipeline.String())
+	//agg.logger.Debug("agg_test, onDone, aggregationKey:" + key.pipeline.String())
 
 	if agg.byKey[idx].currRefCnt == agg.byKey[idx].totalRefCnt {
 		var (
@@ -534,8 +536,9 @@ func (agg *forwardedAggregation) onDone(key aggregationKey) error {
 			}
 			b.version++
 
-			agg.logger.Debug("agg_test, onDone, metric key:" + string(metric.String()))
-
+			if strings.Contains(metric.String(), "rulemanager_latest_rule_evaluation_time") {
+				agg.logger.Debug("agg_test, onDone, metric key:" + string(metric.String()) + ", timeNano:" + strconv.FormatInt(metric.TimeNanos, 10))
+			}
 			if err := agg.client.WriteForwarded(metric, meta); err != nil {
 				multiErr = multiErr.Add(err)
 				agg.metrics.onDoneWriteErrors.Inc(1)

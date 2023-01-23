@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -231,12 +232,12 @@ func (e *GaugeElem) Consume(
 	valuesForConsideration := e.values
 	e.values = e.values[:0]
 	for _, value := range valuesForConsideration {
-		//if strings.Contains(e.ID().String(), "node_network_transmit_queue_length:") {
-		//e.log.Debug("agg_test, consume value metric:" + string(e.id) + ", startNanos:" + strconv.FormatInt(value.startAtNanos, 10))
-		//}
+		if strings.Contains(e.ID().String(), "rulemanager_latest_rule_evaluation_time") {
+			e.log.Debug("agg_test, consume value metric:" + string(e.id) + ", startNanos:" + strconv.FormatInt(value.startAtNanos, 10))
+		}
 
 		if !isEarlierThanFn(value.startAtNanos, resolution, targetNanos) {
-			//e.log.Debug("agg_test, appended, metric:" + string(e.id) + ", targetNanos:" + strconv.FormatInt(targetNanos, 10))
+
 			e.values = append(e.values, value)
 			continue
 		}
@@ -246,6 +247,10 @@ func (e *GaugeElem) Consume(
 			// since any metrics intended for this value are rejected for being too late.
 			expiredNanos := targetNanos - e.bufferForPastTimedMetricFn(resolution).Nanoseconds()
 			expired = value.startAtNanos < expiredNanos
+
+			if strings.Contains(e.ID().String(), "rulemanager_latest_rule_evaluation_time") {
+				e.log.Debug("agg_test, resend is enabled, metric:" + string(e.id) + ", expiredNanos:" + strconv.FormatInt(expiredNanos, 10))
+			}
 		}
 
 		// Modify the by value copy with whether it needs time flush and accumulate.
@@ -256,8 +261,6 @@ func (e *GaugeElem) Consume(
 		if !expired {
 			// Keep item. Expired values are GC'd below after consuming.
 			e.values = append(e.values, value)
-		} else {
-			e.log.Debug("agg_test, data has expired, metric: " + string(e.id) + ", startNanos:" + strconv.FormatInt(value.startAtNanos, 10) + ", expiredNanos:" + strconv.FormatInt(targetNanos-e.bufferForPastTimedMetricFn(resolution).Nanoseconds(), 10) + ", timeout limit: " + strconv.FormatInt(e.bufferForPastTimedMetricFn(resolution).Nanoseconds(), 10))
 		}
 	}
 	canCollect := len(e.values) == 0 && e.tombstoned
@@ -296,6 +299,11 @@ func (e *GaugeElem) Consume(
 
 		// Closes the aggregation object after it's processed.
 		if expired {
+
+			if strings.Contains(e.ID().String(), "rulemanager_latest_rule_evaluation_time") {
+				e.log.Debug("agg_test, resend is enabled, metric:" + string(e.id) + ", startAtNanos:" + strconv.FormatInt(e.toConsume[i].startAtNanos, 10))
+			}
+
 			// Cleanup expired item.
 			e.toConsume[i].lockedAgg.closed = true
 			e.toConsume[i].lockedAgg.aggregation.Close()
@@ -322,7 +330,9 @@ func (e *GaugeElem) Consume(
 
 	if e.parsedPipeline.HasRollup {
 		forwardedAggregationKey, _ := e.ForwardedAggregationKey()
-		e.log.Debug("agg_test, HasRollup: " + e.parsedPipeline.Remainder.String())
+		if strings.Contains(e.ID().String(), "rulemanager_latest_rule_evaluation_time") {
+			e.log.Debug("agg_test, HasRollup: " + e.parsedPipeline.Remainder.String())
+		}
 		onForwardedFlushedFn(e.onForwardedAggregationWrittenFn, forwardedAggregationKey)
 	}
 
@@ -374,8 +384,6 @@ func (e *GaugeElem) findOrCreate(
 	createOpts createAggregationOptions,
 ) (*lockedGaugeAggregation, error) {
 
-	e.log.Debug("agg_test, findOrCreate:" + string(e.ID()) + ", alignedStart:" + strconv.FormatInt(alignedStart, 10))
-
 	e.RLock()
 	if e.closed {
 		e.RUnlock()
@@ -397,6 +405,9 @@ func (e *GaugeElem) findOrCreate(
 	idx, found = e.indexOfWithLock(alignedStart)
 	if found {
 		agg := e.values[idx].lockedAgg
+		if strings.Contains(string(e.ID()), "rulemanager_latest_rule_evaluation_time") {
+			e.log.Debug("agg_test, findOrCreate, found! :" + string(e.ID()) + ", startAtNanos:" + strconv.FormatInt(e.values[idx].startAtNanos, 10))
+		}
 		e.Unlock()
 		return agg, nil
 	}
@@ -430,6 +441,11 @@ func (e *GaugeElem) findOrCreate(
 		},
 	}
 	agg := e.values[idx].lockedAgg
+
+	if strings.Contains(string(e.ID()), "rulemanager_latest_rule_evaluation_time") {
+		e.log.Debug("agg_test, findOrCreate, not found! :" + string(e.ID()) + ", startAtNanos:" + strconv.FormatInt(alignedStart, 10))
+	}
+
 	e.Unlock()
 	return agg, nil
 }

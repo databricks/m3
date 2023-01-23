@@ -23,6 +23,7 @@ package aggregator
 import (
 	"container/list"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -819,46 +820,46 @@ func (e *Entry) checkTimestampForTimedMetric(
 	currNanos int64,
 	resolution time.Duration,
 ) error {
-	//metricTimeNanos := metric.TimeNanos
-	//e.metrics.timed.ingestDelay.RecordDuration(time.Duration(e.nowFn().UnixNano() - metricTimeNanos))
-	//timedBufferFuture := e.opts.BufferForFutureTimedMetric()
-	//if metricTimeNanos-currNanos > timedBufferFuture.Nanoseconds() {
-	//	e.metrics.timed.tooFarInTheFuture.Inc(1)
-	//	if !e.opts.VerboseErrors() {
-	//		// Don't return verbose errors if not enabled.
-	//		return errTooFarInTheFuture
-	//	}
-	//	timestamp := time.Unix(0, metricTimeNanos)
-	//	futureLimit := time.Unix(0, currNanos+timedBufferFuture.Nanoseconds())
-	//	err := fmt.Errorf("datapoint for aggregation too far in future: "+
-	//		"off_by=%s, timestamp=%s, future_limit=%s, "+
-	//		"timestamp_unix_nanos=%d, future_limit_unix_nanos=%d",
-	//		timestamp.Sub(futureLimit).String(),
-	//		timestamp.Format(errTimestampFormat),
-	//		futureLimit.Format(errTimestampFormat),
-	//		timestamp.UnixNano(), futureLimit.UnixNano())
-	//	return xerrors.NewRenamedError(errTooFarInTheFuture, err)
-	//}
-	//bufferPastFn := e.opts.BufferForPastTimedMetricFn()
-	//timedBufferPast := bufferPastFn(resolution)
-	//if currNanos-metricTimeNanos > timedBufferPast.Nanoseconds() {
-	//	e.metrics.timed.tooFarInThePast.Inc(1)
-	//	if !e.opts.VerboseErrors() {
-	//		// Don't return verbose errors if not enabled.
-	//		return errTooFarInThePast
-	//	}
-	//	timestamp := time.Unix(0, metricTimeNanos)
-	//	pastLimit := time.Unix(0, currNanos-timedBufferPast.Nanoseconds())
-	//	err := fmt.Errorf("datapoint for aggregation too far in past: "+
-	//		"off_by=%s, timestamp=%s, past_limit=%s, "+
-	//		"timestamp_unix_nanos=%d, past_limit_unix_nanos=%d",
-	//		pastLimit.Sub(timestamp).String(),
-	//		timestamp.Format(errTimestampFormat),
-	//		pastLimit.Format(errTimestampFormat),
-	//		timestamp.UnixNano(), pastLimit.UnixNano())
-	//	return xerrors.NewRenamedError(errTooFarInThePast, err)
-	//}
-	return nil
+	metricTimeNanos := metric.TimeNanos
+	e.metrics.timed.ingestDelay.RecordDuration(time.Duration(e.nowFn().UnixNano() - metricTimeNanos))
+	timedBufferFuture := e.opts.BufferForFutureTimedMetric()
+	if metricTimeNanos-currNanos > timedBufferFuture.Nanoseconds() {
+		e.metrics.timed.tooFarInTheFuture.Inc(1)
+		if !e.opts.VerboseErrors() {
+			// Don't return verbose errors if not enabled.
+			return errTooFarInTheFuture
+		}
+		timestamp := time.Unix(0, metricTimeNanos)
+		futureLimit := time.Unix(0, currNanos+timedBufferFuture.Nanoseconds())
+		err := fmt.Errorf("datapoint for aggregation too far in future: "+
+			"off_by=%s, timestamp=%s, future_limit=%s, "+
+			"timestamp_unix_nanos=%d, future_limit_unix_nanos=%d",
+			timestamp.Sub(futureLimit).String(),
+			timestamp.Format(errTimestampFormat),
+			futureLimit.Format(errTimestampFormat),
+			timestamp.UnixNano(), futureLimit.UnixNano())
+		return xerrors.NewRenamedError(errTooFarInTheFuture, err)
+	}
+	bufferPastFn := e.opts.BufferForPastTimedMetricFn()
+	timedBufferPast := bufferPastFn(resolution)
+	if currNanos-metricTimeNanos > timedBufferPast.Nanoseconds() {
+		e.metrics.timed.tooFarInThePast.Inc(1)
+		if !e.opts.VerboseErrors() {
+			// Don't return verbose errors if not enabled.
+			return errTooFarInThePast
+		}
+		timestamp := time.Unix(0, metricTimeNanos)
+		pastLimit := time.Unix(0, currNanos-timedBufferPast.Nanoseconds())
+		err := fmt.Errorf("datapoint for aggregation too far in past: "+
+			"off_by=%s, timestamp=%s, past_limit=%s, "+
+			"timestamp_unix_nanos=%d, past_limit_unix_nanos=%d",
+			pastLimit.Sub(timestamp).String(),
+			timestamp.Format(errTimestampFormat),
+			pastLimit.Format(errTimestampFormat),
+			timestamp.UnixNano(), pastLimit.UnixNano())
+		return xerrors.NewRenamedError(errTooFarInThePast, err)
+	}
+	//return nil
 }
 
 func (e *Entry) updateTimedMetadataWithLock(
@@ -1005,36 +1006,36 @@ func (e *Entry) checkLatenessForForwardedMetric(
 	resolution time.Duration,
 	numForwardedTimes int,
 ) error {
-	//metricTimeNanos := metric.TimeNanos
-	//maxAllowedForwardingDelayFn := e.opts.MaxAllowedForwardingDelayFn()
-	//maxLatenessAllowed := maxAllowedForwardingDelayFn(resolution, numForwardedTimes)
-	//if metadata.ResendEnabled {
-	//	maxLatenessAllowed = e.opts.BufferForPastTimedMetricFn()(resolution)
-	//}
+	metricTimeNanos := metric.TimeNanos
+	maxAllowedForwardingDelayFn := e.opts.MaxAllowedForwardingDelayFn()
+	maxLatenessAllowed := maxAllowedForwardingDelayFn(resolution, numForwardedTimes)
+	if metadata.ResendEnabled {
+		maxLatenessAllowed = e.opts.BufferForPastTimedMetricFn()(resolution)
+	}
 
-	return nil
+	//return nil
 
-	//if currNanos-metricTimeNanos <= maxLatenessAllowed.Nanoseconds() {
-	//	return nil
-	//}
-	//
-	//e.metrics.forwarded.arrivedTooLate.Inc(1)
-	//
-	//if !e.opts.VerboseErrors() {
-	//	// Don't return verbose errors if not enabled.
-	//	return errArrivedTooLate
-	//}
-	//
-	//timestamp := time.Unix(0, metricTimeNanos)
-	//pastLimit := time.Unix(0, currNanos-maxLatenessAllowed.Nanoseconds())
-	//err := fmt.Errorf("datapoint for aggregation forwarded too late: "+
-	//	"id=%s, off_by=%s, timestamp=%s, past_limit=%s, "+
-	//	"timestamp_unix_nanos=%d, past_limit_unix_nanos=%d",
-	//	metric.ID, maxLatenessAllowed.String(),
-	//	timestamp.Format(errTimestampFormat),
-	//	pastLimit.Format(errTimestampFormat),
-	//	timestamp.UnixNano(), pastLimit.UnixNano())
-	//return xerrors.NewRenamedError(errArrivedTooLate, err)
+	if currNanos-metricTimeNanos <= maxLatenessAllowed.Nanoseconds() {
+		return nil
+	}
+
+	e.metrics.forwarded.arrivedTooLate.Inc(1)
+
+	if !e.opts.VerboseErrors() {
+		// Don't return verbose errors if not enabled.
+		return errArrivedTooLate
+	}
+
+	timestamp := time.Unix(0, metricTimeNanos)
+	pastLimit := time.Unix(0, currNanos-maxLatenessAllowed.Nanoseconds())
+	err := fmt.Errorf("datapoint for aggregation forwarded too late: "+
+		"id=%s, off_by=%s, timestamp=%s, past_limit=%s, "+
+		"timestamp_unix_nanos=%d, past_limit_unix_nanos=%d",
+		metric.ID, maxLatenessAllowed.String(),
+		timestamp.Format(errTimestampFormat),
+		pastLimit.Format(errTimestampFormat),
+		timestamp.UnixNano(), pastLimit.UnixNano())
+	return xerrors.NewRenamedError(errArrivedTooLate, err)
 }
 
 func (e *Entry) updateForwardMetadataWithLock(

@@ -24,7 +24,6 @@ import (
 	"container/list"
 	"errors"
 	"fmt"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -261,9 +260,9 @@ func (l *baseMetricList) PushBack(value metricElem) (*list.Element, error) {
 		return nil, errListClosed
 	}
 
-	if strings.Contains(value.ID().String(), "node_network_transmit_queue_length:") {
-		l.log.Debug("agg_test, push back: " + value.ID().String())
-	}
+	//if strings.Contains(value.ID().String(), "node_network_transmit_queue_length:") {
+	//	l.log.Debug("agg_test, push back: " + value.ID().String())
+	//}
 
 	elem := l.aggregations.PushBack(value)
 	if !hasForwardedID {
@@ -379,7 +378,7 @@ func (l *baseMetricList) flushBefore(beforeNanos int64, flushType flushType) {
 		// processed, add it to the list of elements to collect.
 		elem := e.Value.(metricElem)
 
-		l.log.Debug("agg_test, before flush back: " + elem.ID().String() + ", Type: " + string(elem.Type()))
+		//l.log.Debug("agg_test, before flush back: " + elem.ID().String() + ", Type: " + string(elem.Type()))
 
 		if elem.Consume(
 			beforeNanos,
