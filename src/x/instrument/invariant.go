@@ -77,6 +77,16 @@ func EmitAndLogInvariantViolation(opts Options, f func(l *zap.Logger)) {
 	EmitInvariantViolation(opts)
 }
 
+func PreAggregationAuditLog(opts Options, methodName string, id string, timestamp string, value string, f func(l *zap.Logger)) {
+	logger := opts.Logger().With(
+		zap.String("AuditMethod", methodName),
+		zap.String("metricId", id),
+		zap.String("timestamp", timestamp),
+		zap.String("value", value),
+	)
+	f(logger)
+}
+
 // InvariantErrorf constructs a new error, prefixed with a string indicating that an invariant
 // violation occurred. Optionally panics if the ShouldPanicEnvironmentVariableName is set to "true".
 func InvariantErrorf(format string, a ...interface{}) error {
