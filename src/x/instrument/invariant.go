@@ -77,9 +77,8 @@ func EmitAndLogInvariantViolation(opts Options, f func(l *zap.Logger)) {
 	EmitInvariantViolation(opts)
 }
 
-func PreAggregationAuditLog(opts Options, methodName string, id string, timestamp string, value string, f func(l *zap.Logger)) {
+func PreAggregationAuditLog(opts Options, id string, timestamp string, value string, f func(l *zap.Logger)) {
 	logger := opts.Logger().With(
-		zap.String("AuditMethod", methodName),
 		zap.String("metricId", id),
 		zap.String("timestamp", timestamp),
 		zap.String("value", value),

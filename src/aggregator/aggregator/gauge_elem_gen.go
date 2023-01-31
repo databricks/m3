@@ -43,6 +43,10 @@ import (
 	"go.uber.org/zap"
 )
 
+const (
+	AuditLogMetric = "rpc_server_request_duration_seconds_bucket"
+)
+
 type lockedGaugeAggregation struct {
 	aggregation   gaugeAggregation
 	sourcesSeen   map[uint32]*bitset.BitSet
@@ -158,16 +162,7 @@ func (e *GaugeElem) AddUnion(timestamp time.Time, mu unaggregated.MetricUnion, r
 func (e *GaugeElem) AddValue(timestamp time.Time, value float64, annotation []byte) error {
 	alignedStart := timestamp.Truncate(e.sp.Resolution().Window).UnixNano()
 
-	if strings.Contains(e.ID().String(), "rpc_server_request_duration_seconds_bucket") {
-		instrument.PreAggregationAuditLog(e.opts.InstrumentOptions(),
-			"gauge-AddValue",
-			string(e.id),
-			xtime.UnixNano(alignedStart).String(),
-			fmt.Sprintf("%f", value),
-			func(l *zap.Logger) {
-				l.Info("audit_log")
-			})
-	}
+	e.conditionalAuditLog(AuditLogMetric, xtime.UnixNano(alignedStart), value, "gauge-AddValue")
 
 	lockedAgg, err := e.findOrCreate(alignedStart, createAggregationOptions{})
 	if err != nil {
@@ -257,17 +252,7 @@ func (e *GaugeElem) expireValuesWithLock(
 		if e.flushState[currAgg.startAt].latestResendEnabled {
 			// if resend enabled we want to keep this value until it is outside the buffer past period.
 			if !isEarlierThanFn(int64(currAgg.startAt), resolution, resendExpire) {
-
-				if strings.Contains(e.ID().String(), "rpc_server_request_duration_seconds_bucket") {
-					instrument.PreAggregationAuditLog(e.opts.InstrumentOptions(),
-						"gauge-expireValuesWithLock",
-						string(e.id),
-						currAgg.startAt.String(),
-						fmt.Sprintf("%f", 0),
-						func(l *zap.Logger) {
-							l.Info("audit_log, keep aggregation open since bufferForPastTime")
-						})
-				}
+				e.conditionalAuditLog(AuditLogMetric, currAgg.startAt, 0, "gauge-expireValuesWithLock, keep aggregation open since bufferForPastTime")
 				break
 			}
 		}
@@ -289,16 +274,7 @@ func (e *GaugeElem) expireValuesWithLock(
 			break
 		}
 
-		if strings.Contains(e.ID().String(), "rpc_server_request_duration_seconds_bucket") {
-			instrument.PreAggregationAuditLog(e.opts.InstrumentOptions(),
-				"gauge-expireValuesWithLock",
-				string(e.id),
-				currAgg.startAt.String(),
-				fmt.Sprintf("%f", 0),
-				func(l *zap.Logger) {
-					l.Info("audit_log, close aggregation")
-				})
-		}
+		e.conditionalAuditLog(AuditLogMetric, currAgg.startAt, 0, "gauge-expireValuesWithLock, close aggregation")
 
 		// if this current value is closed and clean it will no longer be flushed. this means it's safe
 		// to remove the previous value since it will no longer be needed for binary transformations. when the
@@ -704,17 +680,7 @@ func (e *GaugeElem) findOrCreate(
 			e.values[alignedStart] = timedAgg
 		}
 
-		if strings.Contains(e.ID().String(), "rpc_server_request_duration_seconds_bucket") {
-			instrument.PreAggregationAuditLog(e.opts.InstrumentOptions(),
-				"gauge-findOrCreate",
-				string(e.id),
-				alignedStart.String(),
-				fmt.Sprintf("%f", 0),
-				func(l *zap.Logger) {
-					l.Info("audit_log, found bucket")
-				})
-		}
-
+		e.conditionalAuditLog(AuditLogMetric, alignedStart, 0, "gauge-findOrCreate, found bucket")
 		e.Unlock()
 		return timedAgg.lockedAgg, nil
 	}
@@ -746,16 +712,7 @@ func (e *GaugeElem) findOrCreate(
 		inDirtySet: true,
 	}
 
-	if strings.Contains(e.ID().String(), "rpc_server_request_duration_seconds_bucket") {
-		instrument.PreAggregationAuditLog(e.opts.InstrumentOptions(),
-			"gauge-findOrCreate",
-			string(e.id),
-			alignedStart.String(),
-			fmt.Sprintf("%f", 0),
-			func(l *zap.Logger) {
-				l.Info("audit_log, no exist bucket")
-			})
-	}
+	e.conditionalAuditLog(AuditLogMetric, alignedStart, 0, "gauge-findOrCreate, no exist bucket")
 
 	if len(e.values) == 0 || e.minStartTime > alignedStart {
 		e.minStartTime = alignedStart
@@ -840,17 +797,7 @@ func (e *GaugeElem) processValue(
 
 				value = res.Value
 
-				if strings.Contains(e.ID().String(), "rpc_server_request_duration_seconds_bucket") {
-					instrument.PreAggregationAuditLog(e.opts.InstrumentOptions(),
-						"gauge-processValue",
-						string(e.id),
-						timestamp.String(),
-						fmt.Sprintf("%f", value),
-						func(l *zap.Logger) {
-							l.Info("audit_log, unaryOp(Add)")
-						})
-				}
-
+				e.conditionalAuditLog(AuditLogMetric, timestamp, value, "gauge-processValue, unaryOp(Add)")
 			case isBinaryOp:
 				prev := transformation.Datapoint{
 					Value: nan,
@@ -884,16 +831,7 @@ func (e *GaugeElem) processValue(
 				fState.consumedValues[aggTypeIdx] = curr.Value
 				value = res.Value
 
-				if strings.Contains(e.ID().String(), "rpc_server_request_duration_seconds_bucket") {
-					instrument.PreAggregationAuditLog(e.opts.InstrumentOptions(),
-						"gauge-processValue",
-						string(e.id),
-						timestamp.String(),
-						fmt.Sprintf("%f", value),
-						func(l *zap.Logger) {
-							l.Info("audit_log, isBinaryOp(Increase)")
-						})
-				}
+				e.conditionalAuditLog(AuditLogMetric, timestamp, value, "gauge-processValue, isBinaryOp(Increase)")
 
 			case isUnaryMultiOp:
 				curr := transformation.Datapoint{
@@ -949,16 +887,7 @@ func (e *GaugeElem) processValue(
 						point.TimeNanos, point.Value, cState.annotation, e.sp)
 				}
 
-				if strings.Contains(e.ID().String(), "rpc_server_request_duration_seconds_bucket") {
-					instrument.PreAggregationAuditLog(e.opts.InstrumentOptions(),
-						"gauge-processValue",
-						string(e.id),
-						timestamp.String(),
-						fmt.Sprintf("%f", value),
-						func(l *zap.Logger) {
-							l.Info("audit_log, flush value without Rollup")
-						})
-				}
+				e.conditionalAuditLog(AuditLogMetric, timestamp, value, "gauge-processValue, flush value without Rollup")
 			}
 
 		} else {
@@ -966,16 +895,8 @@ func (e *GaugeElem) processValue(
 			flushForwardedFn(e.writeForwardedMetricFn, forwardedAggregationKey,
 				int64(timestamp), value, prevValue, cState.annotation, cState.resendEnabled)
 
-			if strings.Contains(e.ID().String(), "rpc_server_request_duration_seconds_bucket") {
-				instrument.PreAggregationAuditLog(e.opts.InstrumentOptions(),
-					"gauge-processValue",
-					string(e.id),
-					timestamp.String(),
-					fmt.Sprintf("%f", value),
-					func(l *zap.Logger) {
-						l.Info("audit_log, flush value without Rollup")
-					})
-			}
+			e.conditionalAuditLog(AuditLogMetric, timestamp, value, "gauge-processValue, flush value with Rollup")
+
 		}
 		// add latenessAllowed and jitter to the timestamp of the aggregation, since those should not be
 		// counted towards the processing lag.
@@ -990,4 +911,20 @@ func (e *GaugeElem) processValue(
 	}
 	fState.flushed = true
 	e.flushState[cState.startAt] = fState
+}
+
+func (e *GaugeElem) conditionalAuditLog(metricPattern string,
+	timestamp xtime.UnixNano,
+	value float64,
+	message string,
+) {
+	if strings.Contains(e.ID().String(), metricPattern) {
+		instrument.PreAggregationAuditLog(e.opts.InstrumentOptions(),
+			string(e.id),
+			timestamp.String(),
+			fmt.Sprintf("%f", value),
+			func(l *zap.Logger) {
+				l.Info("audit_log - " + message)
+			})
+	}
 }
