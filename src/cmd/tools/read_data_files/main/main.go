@@ -136,6 +136,12 @@ func main() {
 		log.Fatalf("could not create new reader: %v", err)
 	}
 
+	filterIds := strings.Split(*idFilter, ",")
+	filterIdSets := make(map[string]bool)
+	for _, filterId := range filterIds {
+		filterIdSets[filterId] = true
+	}
+
 	for _, shard := range shards {
 		var (
 			seriesCount         = 0
@@ -174,7 +180,17 @@ func main() {
 				data = entry.Data
 			)
 
-			if *idFilter != "" && !strings.Contains(id.String(), *idFilter) {
+			var filterMatches bool = false
+			var matchedId string = ""
+			for _, filterId := range filterIds {
+				if strings.Contains(id.String(), filterId) {
+					filterMatches = true
+					matchedId = filterId
+					break
+				}
+			}
+
+			if *idFilter != "" && !filterMatches && matchedId == "" {
 				continue
 			}
 
