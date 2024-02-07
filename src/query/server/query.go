@@ -431,6 +431,40 @@ func Run(runOpts RunOptions) RunResult {
 	}
 
 	rwOpts := serveOptions.RWOptions()
+	setUpPantheonStorageType := func() (func(), error) {
+		logger.Info("setup Pantheon storage backend")
+		opts, err := promremote.NewOptions(cfg.PrometheusRemoteBackend, scope, instrumentOptions.Logger())
+		if err != nil {
+			logger.Error("invalid configuration", zap.Error(err))
+			return func(){}, err
+		}
+		promRemoteStorage, err = promremote.NewStorage(opts)
+		if err != nil {
+			logger.Error("unable to setup prom remote backend", zap.Error(err))
+			return func(){}, err
+		}
+		return func() {
+			if err := promRemoteStorage.Close(); err != nil {
+				logger.Error("error when closing storage", zap.Error(err))
+			}
+		}, nil
+	}
+	setUpNoopStorageBackend := func()  {
+		backendStorage = storage.NewNoopStorage()
+		etcd := cfg.ClusterManagement.Etcd
+
+		if etcd == nil || len(etcd.ETCDClusters) == 0 {
+			logger.Fatal("must specify cluster management config and at least one etcd cluster")
+		}
+
+		opts := etcd.NewOptions()
+		clusterClient, err = etcdclient.NewConfigServiceClient(opts)
+		if err != nil {
+			logger.Fatal("error constructing etcd client", zap.Error(err))
+		}
+		logger.Info("setup noop storage backend with etcd")
+	}
+
 	switch cfg.Backend {
 	case config.GRPCStorageType:
 		// For grpc backend, we need to setup only the grpc client and a storage
@@ -457,36 +491,27 @@ func Run(runOpts RunOptions) RunResult {
 			tagOptions, tsdbOpts, instrumentOptions)
 		logger.Info("setup grpc backend")
 
+	case config.PantheonStorageType:
+		closeFunc, err := setUpPantheonStorageType()
+		// setUpPantheonStorageType returns a close function even when an error happens.
+		defer closeFunc()
+		if (err != nil) {
+			// TODO: remove this fallback to noop storage backend after Pantheon storage backend
+			// is fully supported in all clusters (e.g., the integration test cluster).
+			logger.Error("Falling back to noop storage backend after failing to setup Pantheon storage backend", zap.Error(err))
+			setUpNoopStorageBackend()
+		}
+
 	case config.NoopEtcdStorageType:
-		backendStorage = storage.NewNoopStorage()
-		etcd := cfg.ClusterManagement.Etcd
-
-		if etcd == nil || len(etcd.ETCDClusters) == 0 {
-			logger.Fatal("must specify cluster management config and at least one etcd cluster")
-		}
-
-		opts := etcd.NewOptions()
-		clusterClient, err = etcdclient.NewConfigServiceClient(opts)
-		if err != nil {
-			logger.Fatal("error constructing etcd client", zap.Error(err))
-		}
-		logger.Info("setup noop storage backend with etcd")
+		setUpNoopStorageBackend()
 
 	case config.DualStorageType:
-		logger.Info("setup dual storage backend")
-		opts, err := promremote.NewOptions(cfg.PrometheusRemoteBackend, scope, instrumentOptions.Logger())
-		if err != nil {
-			logger.Fatal("invalid configuration", zap.Error(err))
+		closeFunc, err := setUpPantheonStorageType()
+		// setUpPantheonStorageType returns a close function even when an error happens.
+		defer closeFunc()
+		if (err != nil) {
+			logger.Fatal("Failed to setup Pantheon storage backend", zap.Error(err))
 		}
-		promRemoteStorage, err = promremote.NewStorage(opts)
-		if err != nil {
-			logger.Fatal("unable to setup prom remote backend", zap.Error(err))
-		}
-		defer func() {
-			if err := promRemoteStorage.Close(); err != nil {
-				logger.Error("error when closing storage", zap.Error(err))
-			}
-		}()
 		fallthrough
 	// Empty backend defaults to M3DB.
 	case "", config.M3DBStorageType:

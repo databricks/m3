@@ -96,6 +96,12 @@ func (h *ReadyHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	result := &readyResult{}
+	if len(namespaces) == 0 {
+		logger.Warn("no namespaces found. return ready for writes and reads.")
+		emptyNs := readyResultNamespace{}
+		result.ReadyWrites = append(result.ReadyWrites, emptyNs)
+		result.ReadyReads = append(result.ReadyReads, emptyNs)
+	}
 	for _, ns := range namespaces {
 		attrs := ns.Options().Attributes()
 		nsResult := readyResultNamespace{
