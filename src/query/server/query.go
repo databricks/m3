@@ -431,6 +431,23 @@ func Run(runOpts RunOptions) RunResult {
 	}
 
 	rwOpts := serveOptions.RWOptions()
+	setUpPantheonStorageType := func() func() {
+		logger.Info("setup Pantheon storage backend")
+		opts, err := promremote.NewOptions(cfg.PrometheusRemoteBackend, scope, instrumentOptions.Logger())
+		if err != nil {
+			logger.Fatal("invalid configuration", zap.Error(err))
+		}
+		promRemoteStorage, err = promremote.NewStorage(opts)
+		if err != nil {
+			logger.Fatal("unable to setup prom remote backend", zap.Error(err))
+		}
+		return func() {
+			if err := promRemoteStorage.Close(); err != nil {
+				logger.Error("error when closing storage", zap.Error(err))
+			}
+		}
+	}
+
 	switch cfg.Backend {
 	case config.GRPCStorageType:
 		// For grpc backend, we need to setup only the grpc client and a storage
@@ -471,7 +488,7 @@ func Run(runOpts RunOptions) RunResult {
 			logger.Fatal("error constructing etcd client", zap.Error(err))
 		}
 		logger.Info("setup noop storage backend with etcd")
-
+	// NB: all cases above are broken!! "downsampler" won't be initialized if the cases below are not executed.
 	case config.DualStorageType:
 		logger.Info("setup dual storage backend")
 		opts, err := promremote.NewOptions(cfg.PrometheusRemoteBackend, scope, instrumentOptions.Logger())
@@ -509,8 +526,7 @@ func Run(runOpts RunOptions) RunResult {
 		}
 
 		defer cleanup()
-
-		if cfg.Backend == config.DualStorageType {
+		if (cfg.Backend == config.DualStorageType) {
 			backendStorage = composite.Compose(logger, m3Storage, promRemoteStorage)
 		} else {
 			backendStorage = m3Storage
@@ -536,7 +552,8 @@ func Run(runOpts RunOptions) RunResult {
 			}
 			logger.Fatal("unable to setup downsampler for m3db backend", zap.Error(err))
 		}
-	case config.PromRemoteStorageType:
+	case config.PromRemoteStorageType, config.PantheonStorageType:
+		logger.Info("setup Pantheon standalone storage backend")
 		opts, err := promremote.NewOptions(cfg.PrometheusRemoteBackend, scope, instrumentOptions.Logger())
 		if err != nil {
 			logger.Fatal("invalid configuration", zap.Error(err))
