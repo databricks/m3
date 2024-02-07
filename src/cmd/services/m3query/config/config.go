@@ -65,6 +65,8 @@ const (
 
 	// DualStorageType is a composite backend type with both m3db+prom-remote
 	DualStorageType BackendStorageType = "dual"
+	// Only write to Pantheon. If Pantheon backend is not configured, it will use NoopEtcdStorageType.
+	PantheonStorageType BackendStorageType = "pantheon"
 
 	defaultListenAddress = "0.0.0.0:7201"
 
