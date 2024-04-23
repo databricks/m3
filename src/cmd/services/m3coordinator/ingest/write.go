@@ -113,8 +113,9 @@ type WriteOptions struct {
 }
 
 type downsamplerAndWriterMetrics struct {
-	dropped metricsBySource
-	written metricsBySource
+	dropped            metricsBySource
+	written            metricsBySource
+	multiPolicyWritten metricsBySource
 }
 
 type metricsBySource struct {
@@ -128,6 +129,14 @@ func (m metricsBySource) report(source ts.SourceType) {
 		counter = m.byUnknown
 	}
 	counter.Inc(1)
+}
+
+func (m metricsBySource) reportInc(source ts.SourceType, value int) {
+	counter, ok := m.bySource[source]
+	if !ok {
+		counter = m.byUnknown
+	}
+	counter.Inc(int64(value))
 }
 
 // downsamplerAndWriter encapsulates the logic for writing data to the downsampler,
@@ -148,14 +157,14 @@ func NewDownsamplerAndWriter(
 	instrumentOpts instrument.Options,
 ) DownsamplerAndWriter {
 	scope := instrumentOpts.MetricsScope().SubScope("downsampler")
-
 	return &downsamplerAndWriter{
 		store:       store,
 		downsampler: downsampler,
 		workerPool:  workerPool,
 		metrics: downsamplerAndWriterMetrics{
-			dropped: newMetricsBySource(scope, "metrics_dropped"),
-			written: newMetricsBySource(scope, "metrics_written"),
+			dropped:            newMetricsBySource(scope, "metrics_dropped"),
+			written:            newMetricsBySource(scope, "metrics_written"),
+			multiPolicyWritten: newMetricsBySource(scope, "metrics_multi_policy_written"),
 		},
 	}
 }
@@ -365,9 +374,12 @@ func (d *downsamplerAndWriter) writeToStorage(
 		multiErr xerrors.MultiError
 		errLock  sync.Mutex
 	)
-
-	for _, p := range storagePolicies {
+	if len(storagePolicies) > 1 {
+		d.metrics.multiPolicyWritten.reportInc(source, len(storagePolicies))
+	}
+	for idx, p := range storagePolicies {
 		p := p // Capture for goroutine.
+		duplicateWrite := idx > 0
 
 		wg.Add(1)
 		d.workerPool.Go(func() {
@@ -376,11 +388,12 @@ func (d *downsamplerAndWriter) writeToStorage(
 			// the options down the stack which can cause
 			// the stack to grow (and sometimes cause stack splits).
 			writeQuery, err := storage.NewWriteQuery(storage.WriteQueryOptions{
-				Tags:       tags,
-				Datapoints: datapoints,
-				Unit:       unit,
-				Annotation: annotation,
-				Attributes: storageAttributesFromPolicy(p),
+				Tags:           tags,
+				Datapoints:     datapoints,
+				Unit:           unit,
+				Annotation:     annotation,
+				Attributes:     storageAttributesFromPolicy(p),
+				DuplicateWrite: duplicateWrite,
 			})
 			if err == nil {
 				err = d.store.Write(ctx, writeQuery)
@@ -449,9 +462,13 @@ func (d *downsamplerAndWriter) WriteBatch(
 			}
 
 			d.metrics.written.report(value.Attributes.Source)
+			if len(storagePolicies) > 1 {
+				d.metrics.multiPolicyWritten.reportInc(value.Attributes.Source, len(storagePolicies))
+			}
 
-			for _, p := range storagePolicies {
+			for idx, p := range storagePolicies {
 				p := p // Capture for lambda.
+				duplicateWrite := idx > 0
 				wg.Add(1)
 				d.workerPool.Go(func() {
 					// NB(r): Allocate the write query at the top
@@ -459,11 +476,12 @@ func (d *downsamplerAndWriter) WriteBatch(
 					// the options down the stack which can cause
 					// the stack to grow (and sometimes cause stack splits).
 					writeQuery, err := storage.NewWriteQuery(storage.WriteQueryOptions{
-						Tags:       value.Tags,
-						Datapoints: value.Datapoints,
-						Unit:       value.Unit,
-						Annotation: value.Annotation,
-						Attributes: storageAttributesFromPolicy(p),
+						Tags:           value.Tags,
+						Datapoints:     value.Datapoints,
+						Unit:           value.Unit,
+						Annotation:     value.Annotation,
+						Attributes:     storageAttributesFromPolicy(p),
+						DuplicateWrite: duplicateWrite,
 					})
 					if err == nil {
 						err = d.store.Write(ctx, writeQuery)

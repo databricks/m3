@@ -754,7 +754,8 @@ func Run(runOpts RunOptions) RunResult {
 
 	if cfg.Ingest != nil {
 		logger.Info("starting m3msg server",
-			zap.String("address", cfg.Ingest.M3Msg.Server.ListenAddress))
+			zap.String("address", cfg.Ingest.M3Msg.Server.ListenAddress),
+			zap.String("backend_storage", backendStorage.Name()))
 		ingester, err := cfg.Ingest.Ingester.NewIngester(backendStorage,
 			tagOptions, instrumentOptions)
 		if err != nil {
