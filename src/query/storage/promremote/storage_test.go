@@ -100,12 +100,8 @@ func TestWrite(t *testing.T) {
 	assert.Equal(t, expectedSample, promWrite.Timeseries[0].Samples[0])
 
 	tallytest.AssertCounterValue(
-		t, 1, scope.Snapshot(), "test_scope.prom_remote_storage.writeSingle.success",
-		map[string]string{"endpoint_name": "testEndpoint"},
-	)
-	tallytest.AssertCounterValue(
-		t, 0, scope.Snapshot(), "test_scope.prom_remote_storage.writeSingle.errors",
-		map[string]string{"endpoint_name": "testEndpoint"},
+		t, 1, scope.Snapshot(), "test_scope.prom_remote_storage.write.total",
+		map[string]string{"endpoint_name": "testEndpoint", "code": "200"},
 	)
 }
 
@@ -139,43 +135,50 @@ func TestWriteBasedOnRetention(t *testing.T) {
 		Resolution: 10 * time.Minute,
 		Retention:  8760 * time.Hour,
 	}
-	promStorage, err := NewStorage(Options{
-		endpoints: []EndpointOptions{
-			{
-				address:      promShortRetention.WriteAddr(),
-				attributes:   shortRetentionAttr,
-				tenantHeader: "TENANT",
+	getPromStorage := func() storage.Storage {
+		promStorage, err := NewStorage(Options{
+			endpoints: []EndpointOptions{
+				// always write to the first endpoint
+				{
+					address:      promShortRetention.WriteAddr(),
+					attributes:   shortRetentionAttr,
+					tenantHeader: "TENANT",
+				},
+				{
+					address:      promMediumRetention.WriteAddr(),
+					attributes:   mediumRetentionAttr,
+					tenantHeader: "TENANT",
+				},
+				{
+					address:      promLongRetention.WriteAddr(),
+					attributes:   longRetentionAttr,
+					tenantHeader: "TENANT",
+				},
+				{
+					address:      promLongRetention2.WriteAddr(),
+					attributes:   longRetentionAttr,
+					tenantHeader: "TENANT",
+				},
 			},
-			{
-				address:      promMediumRetention.WriteAddr(),
-				attributes:   mediumRetentionAttr,
-				tenantHeader: "TENANT",
-			},
-			{
-				address:      promLongRetention.WriteAddr(),
-				attributes:   longRetentionAttr,
-				tenantHeader: "TENANT",
-			},
-			{
-				address:      promLongRetention2.WriteAddr(),
-				attributes:   longRetentionAttr,
-				tenantHeader: "TENANT",
-			},
-		},
-		poolSize:      1,
-		queueSize:     9,
-		scope:         scope,
-		logger:        logger,
-		tenantDefault: "unknown",
-		tickDuration:  ptrDuration(tickDuration),
-	})
-	require.NoError(t, err)
-	defer closeWithCheck(t, promStorage)
-
+			poolSize:      1,
+			queueSize:     9,
+			scope:         scope,
+			logger:        logger,
+			tenantDefault: "unknown",
+			tickDuration:  ptrDuration(tickDuration),
+		})
+		require.NoError(t, err)
+		return promStorage
+	}
 	t.Run("send short retention write", func(t *testing.T) {
 		reset()
+		promStorage := getPromStorage()
 		err := writeTestMetric(t, promStorage, shortRetentionAttr)
 		require.NoError(t, err)
+
+		// Close() ensures writes get flushed
+		require.NoError(t, promStorage.Close())
+
 		assert.NotNil(t, getWriteRequest(promShortRetention))
 		assert.Nil(t, getWriteRequest(promMediumRetention))
 		assert.Nil(t, getWriteRequest(promLongRetention))
@@ -183,25 +186,34 @@ func TestWriteBasedOnRetention(t *testing.T) {
 
 	t.Run("send medium retention write", func(t *testing.T) {
 		reset()
+		promStorage := getPromStorage()
 		err := writeTestMetric(t, promStorage, mediumRetentionAttr)
 		require.NoError(t, err)
-		assert.Nil(t, getWriteRequest(promShortRetention))
-		assert.NotNil(t, getWriteRequest(promMediumRetention))
-		assert.Nil(t, getWriteRequest(promLongRetention))
+
+		// Close() ensures writes get flushed
+		require.NoError(t, promStorage.Close())
+
+		assert.NotNil(t, getWriteRequest(promShortRetention))
 	})
 
 	t.Run("send write to multiple instances configured with same retention", func(t *testing.T) {
 		reset()
+		promStorage := getPromStorage()
 		err := writeTestMetric(t, promStorage, longRetentionAttr)
 		require.NoError(t, err)
-		assert.Nil(t, getWriteRequest(promShortRetention))
+
+		// Close() ensures writes get flushed
+		require.NoError(t, promStorage.Close())
+
+		assert.NotNil(t, getWriteRequest(promShortRetention))
 		assert.Nil(t, getWriteRequest(promMediumRetention))
-		assert.NotNil(t, getWriteRequest(promLongRetention))
-		assert.NotNil(t, getWriteRequest(promLongRetention2))
+		assert.Nil(t, getWriteRequest(promLongRetention))
+		assert.Nil(t, getWriteRequest(promLongRetention2))
 	})
 
 	t.Run("send unconfigured retention write", func(t *testing.T) {
 		reset()
+		promStorage := getPromStorage()
 		writeTestMetric(t, promStorage, storagemetadata.Attributes{
 			Resolution: mediumRetentionAttr.Resolution + 1,
 			Retention:  mediumRetentionAttr.Retention,
@@ -210,6 +222,11 @@ func TestWriteBasedOnRetention(t *testing.T) {
 			Resolution: mediumRetentionAttr.Resolution,
 			Retention:  mediumRetentionAttr.Retention + 1,
 		})
+
+		// Close() ensures writes get flushed
+		require.NoError(t, promStorage.Close())
+
+		// All writes get dropped because of "no pre-defined tenant found"
 		assert.Nil(t, getWriteRequest(promShortRetention))
 		assert.Nil(t, getWriteRequest(promMediumRetention))
 		assert.Nil(t, getWriteRequest(promLongRetention))
@@ -219,13 +236,17 @@ func TestWriteBasedOnRetention(t *testing.T) {
 
 	t.Run("error should not prevent sending to other instances", func(t *testing.T) {
 		reset()
+		promStorage := getPromStorage()
 		promLongRetention.SetError("test err", http.StatusInternalServerError)
 		writeTestMetric(t, promStorage, longRetentionAttr)
-		assert.NotNil(t, getWriteRequest(promLongRetention2))
+
+		// Close() ensures writes get flushed
+		require.NoError(t, promStorage.Close())
+
+		assert.NotNil(t, getWriteRequest(promShortRetention))
 	})
 }
 
-/* Disable error handling as everything is async to group by tenants according to rules
 func TestErrorHandling(t *testing.T) {
 	svr := promremotetest.NewServer(t)
 	defer svr.Close()
@@ -235,35 +256,64 @@ func TestErrorHandling(t *testing.T) {
 		Retention:   720 * time.Hour,
 		Resolution:  5 * time.Minute,
 	}
-	promStorage, err := NewStorage(Options{
-		endpoints:     []EndpointOptions{{address: svr.WriteAddr(), attributes: attr, tenantHeader: "TENANT"}},
-		poolSize:      1,
-		queueSize:     1,
-		scope:         scope,
-		logger:        logger,
-		tenantDefault: "unknown",
-		tickDuration:  ptrDuration(tickDuration),
-	})
-	require.NoError(t, err)
-	defer closeWithCheck(t, promStorage)
+	getPromStorage := func(scope tally.Scope) storage.Storage {
+		promStorage, err := NewStorage(Options{
+			endpoints:     []EndpointOptions{{name: "testEndpoint", address: svr.WriteAddr(), attributes: attr, tenantHeader: "TENANT"}},
+			poolSize:      1,
+			queueSize:     1,
+			scope:         scope,
+			logger:        logger,
+			tenantDefault: "unknown",
+			tickDuration:  ptrDuration(tickDuration),
+		})
+		require.NoError(t, err)
+		return promStorage
+	}
 
 	t.Run("wrap non 5xx errors as invalid params error", func(t *testing.T) {
 		svr.Reset()
 		svr.SetError("test err", http.StatusForbidden)
+
+		scope := tally.NewTestScope("5xx_test_scope", map[string]string{})
+		promStorage := getPromStorage(scope)
 		err := writeTestMetric(t, promStorage, attr)
-		require.Error(t, err)
-		assert.True(t, xerrors.IsInvalidParams(err))
+		require.NoError(t, err)
+
+		// Close() ensures writes get flushed
+		require.NoError(t, promStorage.Close())
+
+		tallytest.AssertCounterValue(
+			t, 1, scope.Snapshot(), "5xx_test_scope.prom_remote_storage.write.total",
+			map[string]string{"endpoint_name": "testEndpoint", "code": "403"},
+		)
+		tallytest.AssertCounterValue(
+			t, 1, scope.Snapshot(), "5xx_test_scope.prom_remote_storage.batch_write_err",
+			map[string]string{},
+		)
 	})
 
-	t.Run("429 should not be wrapped as invalid params", func(t *testing.T) {
+	t.Run("409 is not an error", func(t *testing.T) {
 		svr.Reset()
-		svr.SetError("test err", http.StatusTooManyRequests)
+		svr.SetError("test err", http.StatusConflict)
+
+		scope := tally.NewTestScope("409_test_scope", map[string]string{})
+		promStorage := getPromStorage(scope)
 		err := writeTestMetric(t, promStorage, attr)
-		require.Error(t, err)
-		assert.False(t, xerrors.IsInvalidParams(err))
+		require.NoError(t, err)
+
+		// Close() ensures writes get flushed
+		require.NoError(t, promStorage.Close())
+
+		tallytest.AssertCounterValue(
+			t, 1, scope.Snapshot(), "409_test_scope.prom_remote_storage.write.total",
+			map[string]string{"endpoint_name": "testEndpoint", "code": "409"},
+		)
+		tallytest.AssertCounterValue(
+			t, 0, scope.Snapshot(), "409_test_scope.prom_remote_storage.batch_write_err",
+			map[string]string{},
+		)
 	})
 }
-*/
 
 func closeWithCheck(t *testing.T, c io.Closer) {
 	require.NoError(t, c.Close())

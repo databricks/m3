@@ -51,8 +51,6 @@ const logSamplingRate = 0.001
 
 var errorReadingBody = []byte("error reading body")
 
-var errNoEndpoints = errors.New("write did not match any of known endpoints")
-
 // WriteQueue A thread-safe queue
 type WriteQueue struct {
 	t        tenant
@@ -183,6 +181,7 @@ func NewStorage(opts Options) (storage.Storage, error) {
 		pendingQuery:    queriesWithFixedTenants,
 		noTenantFound:   scope.Counter("no_tenant_found"),
 		cancel:          cancel,
+		writeLoopDone:   make(chan struct{}),
 	}
 	s.startAsync(ctx)
 	return s, nil
@@ -205,6 +204,7 @@ type promStorage struct {
 	pendingQuery    map[tenant]*WriteQueue
 	noTenantFound   tally.Counter
 	cancel          context.CancelFunc
+	writeLoopDone   chan struct{}
 }
 
 type tenant struct {
@@ -227,39 +227,50 @@ func (p *promStorage) getTenant(query *storage.WriteQuery) tenant {
 	}
 }
 
-func (p *promStorage) flushPendingQueues(minQueueSizeToFlush int, ctx context.Context, wg *sync.WaitGroup) {
+func (p *promStorage) flushPendingQueues(minQueueSizeToFlush int, ctx context.Context, wg *sync.WaitGroup) int {
+	numWrites := 0
 	for t, queue := range p.pendingQuery {
-		if queue.Len() < minQueueSizeToFlush {
-			if queue.Len() != 0 {
-				p.logger.Warn("don't do tick flush for small batch",
-					zap.String("tenant", t.name),
-					zap.Int("size", queue.Len()),
-					zap.Int("queue size", p.opts.queueSize))
-			}
+		if queue.Len() == 0 {
 			continue
 		}
+		if queue.Len() < minQueueSizeToFlush {
+			p.logger.Warn("don't do tick flush for small batch",
+				zap.String("tenant", t.name),
+				zap.Int("size", queue.Len()),
+				zap.Int("queue size", p.opts.queueSize))
+			continue
+		}
+		numWrites += queue.Len()
 		wg.Add(1)
+		// Copy the loop variable
+		q := queue
 		p.workerPool.Go(func() {
-			queue.Flush(ctx, p)
+			q.Flush(ctx, p)
 			wg.Done()
 		})
 	}
+	return numWrites
 }
 
-func (p *promStorage) writeLoop(ctx context.Context) {
+func (p *promStorage) writeLoop() {
 	ctxForWrites, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	// This loop ensures that all pending writes are flushed before exiting and after `ctx` is done.
 	var wg sync.WaitGroup
 	p.workerPool.Init()
 	ticker := time.NewTicker(*p.opts.tickDuration)
-	for {
+	stop := false
+	for !stop {
 		select {
 		case query := <-p.queryQueue:
 			if query == nil {
-				time.Sleep(100 * time.Millisecond)
-				continue
+				p.logger.Info("Got the poison pill. Exiting the write loop.")
+				// The channel is closed. We should exit.
+				stop = true
+				// This breaks out select instead of the for loop.
+				break
 			}
+			p.logger.Info("Got a write query")
 			t := p.getTenant(query)
 			if _, ok := p.pendingQuery[t]; !ok {
 				p.noTenantFound.Inc(1)
@@ -284,26 +295,27 @@ func (p *promStorage) writeLoop(ctx context.Context) {
 			}
 		case <-ticker.C:
 			p.flushPendingQueues(p.opts.queueSize/10, ctxForWrites, &wg)
-		case <-ctx.Done():
-			p.logger.Info("The context is done. Flushing pending writes.",
-				zap.Int("num_queues", len(p.pendingQuery)),
-			)
-			p.flushPendingQueues(0, ctxForWrites, &wg)
-			// Block until all pending writes are flushed because we don't want to lose any data.
-			wg.Wait()
-			p.logger.Info("successfully exit after flushing pending writes")
-			return
 		}
 	}
+	// At this point, `p.queryQueue` is drained and closed.
+	p.logger.Info("Draining pending per-tenant write queues")
+	numWrites := p.flushPendingQueues(0, ctxForWrites, &wg)
+	p.logger.Info("Waiting for all async pending writes to finish",
+		zap.Int("numWrites", numWrites))
+	// Block until all pending writes are flushed because we don't want to lose any data.
+	wg.Wait()
+	p.logger.Info("All async pending writes are done",
+		zap.Int("numWrites", numWrites))
+	p.writeLoopDone <- struct{}{}
 }
 
-func (p *promStorage) startAsync(ctx context.Context) {
+func (p *promStorage) startAsync(_ context.Context) {
 	p.logger.Info("Start prometheus remote write storage async job",
 		zap.Int("queueSize", p.opts.queueSize),
 		zap.Int("poolSize", p.opts.poolSize))
 	go func() {
 		p.logger.Info("Starting the write loop")
-		p.writeLoop(ctx)
+		p.writeLoop()
 	}()
 }
 
@@ -326,6 +338,7 @@ func (p *promStorage) writeBatch(ctx context.Context, tenant tenant, queries []*
 	}
 	encoded, err := convertAndEncodeWriteQuery(queries)
 	if err != nil {
+		p.batchWriteErr.Inc(1)
 		return err
 	}
 
@@ -335,7 +348,7 @@ func (p *promStorage) writeBatch(ctx context.Context, tenant tenant, queries []*
 	metrics := p.endpointMetrics[endpoint.name]
 	err = p.write(ctx, metrics, endpoint, tenant, bytes.NewReader(encoded))
 	if err != nil {
-		p.batchWriteErr.Inc(int64(len(queries)))
+		p.batchWriteErr.Inc(1)
 	}
 	return err
 }
@@ -345,8 +358,10 @@ func (p *promStorage) Type() storage.Type {
 }
 
 func (p *promStorage) Close() error {
-	// This cancel will be blocked on flushing all pending writes.
+	// This will stop the write loop and block until all pending writes are flushed.
+	close(p.queryQueue)
 	p.cancel()
+	<-p.writeLoopDone
 	// After this point, all writes are flushed or errored out.
 	p.client.CloseIdleConnections()
 	return nil
@@ -394,9 +409,11 @@ func (p *promStorage) write(
 	backoff := 100 * time.Millisecond
 	for i := p.opts.retries; i >= 0; i-- {
 		status, err = p.doRequest(req)
+		p.logger.Debug("write request", zap.Int("status", status), zap.Error(err))
 		if err == nil || status == http.StatusConflict {
 			// 409 is a valid status code due to RWA dual scrape issue
 			// see https://docs.google.com/document/d/19exXqcXxtc37jbdFbztt97-I2S5A873__sAMOGFWD6Q/edit?tab=t.0#heading=h.8kznn96p9jea
+			err = nil
 			break
 		}
 		time.Sleep(backoff)
