@@ -237,6 +237,7 @@ func (op *ingestOp) resetWriteQuery() error {
 			Retention:   op.sp.Retention().Duration(),
 		},
 		Annotation: op.annotation,
+		FromIngestor: true,
 	})
 }
 
