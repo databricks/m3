@@ -160,6 +160,7 @@ func NewStorage(opts Options) (storage.Storage, error) {
 		scope:           scope,
 		droppedWrites:   scope.Counter("dropped_writes"),
 		dupWrites:       scope.Counter("duplicate_writes"),
+		ingestorWrites:  scope.Counter("ingestor_writes"),
 		enqueued:        scope.Counter("enqueued"),
 		enqueuedAggr:    scope.Counter("enqueued_aggregated_samples"),
 		batchWrite:      scope.Counter("batch_write"),
@@ -188,6 +189,7 @@ type promStorage struct {
 	enqueued        tally.Counter
 	enqueuedAggr    tally.Counter
 	dupWrites       tally.Counter
+	ingestorWrites  tally.Counter
 	batchWrite      tally.Counter
 	batchWriteErr   tally.Counter
 	tickWrite       tally.Counter
@@ -214,6 +216,12 @@ func (p *promStorage) getTenant(query *storage.WriteQuery) tenantKey {
 func (p *promStorage) flushPendingQueues(minQueueSizeToFlush int, ctx context.Context, wg *sync.WaitGroup) int {
 	numWrites := 0
 	for t, queue := range p.pendingQuery {
+		if t != queue.t {
+			p.logger.Error("A write queue has a different tenant key than the map key",
+				zap.String("tenant", string(t)),
+				zap.String("queue_tenant", string(queue.t)),
+			)
+		}
 		if queue.Len() == 0 {
 			continue
 		}
@@ -307,8 +315,28 @@ func (p *promStorage) Write(ctx context.Context, query *storage.WriteQuery) erro
 		return nil
 	}
 	if query.DuplicateWrite() {
+		// M3 call site may write the same data according to different storage policies.
+		// See downsampleAndWriter in src/cmd/services/m3coordinator/ingest/write.go
 		p.dupWrites.Inc(1)
 		return nil
+	}
+	if query.Options().FromIngestor {
+		// src/cmd/services/m3coordinator/ingest/m3msg/ingest.go reuses a WriteQuery object to write different
+		// time series by calling ResetWriteQuery(). We need to make a copy of the WriteQuery object to avoid
+		// race conditions.
+		p.ingestorWrites.Inc(1)
+		queryCopy, err := storage.NewWriteQuery(storage.WriteQueryOptions{
+			// Only need Tags and DataPoints. Other field are not used.
+			// See src/query/storage/promremote/query_coverter.go
+			Tags:       query.Tags(),
+			Datapoints: query.Datapoints(),
+		})
+		if err != nil {
+			p.logger.Error("error copying write", zap.Error(err),
+				zap.String("write", query.String()))
+			return err
+		}
+		query = queryCopy
 	}
 	p.queryQueue <- query
 	p.enqueued.Inc(1)
@@ -324,6 +352,26 @@ func (p *promStorage) writeBatch(ctx context.Context, tenant tenantKey, queries 
 		p.logger.Debug("async write batch",
 			zap.String("tenant", string(tenant)),
 			zap.Int("size", len(queries)))
+	}
+	{
+		correctWq := make([]*storage.WriteQuery, 0, len(queries))
+		for _, wq := range queries {
+			correctTenant := p.getTenant(wq)
+			if correctTenant == tenant {
+				correctWq = append(correctWq, wq)
+			} else if rand.Float32() < 0.01 {
+				p.logger.Error("dropping a write because of a wrong tenant",
+					zap.String("expected_tenant", string(correctTenant)),
+					zap.String("actual_tenant", string(tenant)),
+					zap.String("write", wq.String()),
+					zap.Bool("from_ingestor", wq.Options().FromIngestor),
+				)
+			}
+		}
+		queries = correctWq
+	}
+	if len(queries) == 0 {
+		return nil
 	}
 	encoded, err := convertAndEncodeWriteQuery(queries)
 	if err != nil {
