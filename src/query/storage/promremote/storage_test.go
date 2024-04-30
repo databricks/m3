@@ -63,7 +63,6 @@ func TestWrite(t *testing.T) {
 		tickDuration:  ptrDuration(tickDuration),
 	})
 	require.NoError(t, err)
-	defer closeWithCheck(t, promStorage)
 
 	now := xtime.Now()
 	wq, err := storage.NewWriteQuery(storage.WriteQueryOptions{
@@ -83,7 +82,31 @@ func TestWrite(t *testing.T) {
 	require.NoError(t, err)
 	err = promStorage.Write(context.TODO(), wq)
 	require.NoError(t, err)
+
+	dupWq, err := storage.NewWriteQuery(storage.WriteQueryOptions{
+		Tags: models.Tags{
+			Opts: models.NewTagOptions(),
+			Tags: []models.Tag{{
+				Name:  []byte("test_tag_name"),
+				Value: []byte("test_tag_value"),
+			}},
+		},
+		Datapoints: ts.Datapoints{{
+			Timestamp: now,
+			Value:     41,
+		}},
+		Unit:           xtime.Millisecond,
+		DuplicateWrite: true,
+	})
+	require.NoError(t, err)
+	err = promStorage.Write(context.TODO(), dupWq)
+	require.NoError(t, err)
+
+	closeWithCheck(t, promStorage)
+
+	require.NoError(t, err)
 	promWrite := getWriteRequest(fakeProm)
+	require.NotNil(t, promWrite)
 
 	expectedLabel := prompb.Label{
 		Name:  "test_tag_name",
@@ -102,6 +125,11 @@ func TestWrite(t *testing.T) {
 	tallytest.AssertCounterValue(
 		t, 1, scope.Snapshot(), "test_scope.prom_remote_storage.write.total",
 		map[string]string{"endpoint_name": "testEndpoint", "code": "200"},
+	)
+
+	tallytest.AssertCounterValue(
+		t, 1, scope.Snapshot(), "test_scope.prom_remote_storage.duplicate_writes",
+		map[string]string{},
 	)
 }
 
@@ -227,11 +255,11 @@ func TestWriteBasedOnRetention(t *testing.T) {
 		require.NoError(t, promStorage.Close())
 
 		// All writes get dropped because of "no pre-defined tenant found"
-		assert.Nil(t, getWriteRequest(promShortRetention))
+		assert.NotNil(t, getWriteRequest(promShortRetention))
 		assert.Nil(t, getWriteRequest(promMediumRetention))
 		assert.Nil(t, getWriteRequest(promLongRetention))
 		const droppedWrites = "test_scope.prom_remote_storage.dropped_writes"
-		tallytest.AssertCounterValue(t, 2, scope.Snapshot(), droppedWrites, map[string]string{})
+		tallytest.AssertCounterValue(t, 0, scope.Snapshot(), droppedWrites, map[string]string{})
 	})
 
 	t.Run("error should not prevent sending to other instances", func(t *testing.T) {

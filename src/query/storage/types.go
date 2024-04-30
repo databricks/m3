@@ -293,6 +293,9 @@ type WriteQueryOptions struct {
 	Unit       xtime.Unit
 	Annotation []byte
 	Attributes storagemetadata.Attributes
+	// A write can be written to multiple storage policies. This flag is false for the write 
+	// to the first storage policy and true for the writes to the subsequent storage policies.
+	DuplicateWrite bool
 }
 
 // CompleteTagsQuery represents a query that returns an autocompleted
