@@ -160,6 +160,7 @@ func NewStorage(opts Options) (storage.Storage, error) {
 		scope:           scope,
 		droppedWrites:   scope.Counter("dropped_writes"),
 		dupWrites:       scope.Counter("duplicate_writes"),
+		ingestorWrites:  scope.Counter("ingestor_writes"),
 		enqueued:        scope.Counter("enqueued"),
 		enqueuedAggr:    scope.Counter("enqueued_aggregated_samples"),
 		batchWrite:      scope.Counter("batch_write"),
@@ -188,6 +189,7 @@ type promStorage struct {
 	enqueued        tally.Counter
 	enqueuedAggr    tally.Counter
 	dupWrites       tally.Counter
+	ingestorWrites  tally.Counter
 	batchWrite      tally.Counter
 	batchWriteErr   tally.Counter
 	tickWrite       tally.Counter
@@ -214,6 +216,12 @@ func (p *promStorage) getTenant(query *storage.WriteQuery) tenantKey {
 func (p *promStorage) flushPendingQueues(minQueueSizeToFlush int, ctx context.Context, wg *sync.WaitGroup) int {
 	numWrites := 0
 	for t, queue := range p.pendingQuery {
+		if t != queue.t {
+			p.logger.Error("A write queue has a different tenant key than the map key",
+				zap.String("tenant", string(t)),
+				zap.String("queue_tenant", string(queue.t)),
+			)
+		}
 		if queue.Len() == 0 {
 			continue
 		}
@@ -267,11 +275,12 @@ func (p *promStorage) writeLoop() {
 			if dataBatch := p.pendingQuery[t].Add(query); dataBatch != nil {
 				p.batchWrite.Inc(int64(len(dataBatch)))
 				wg.Add(1)
+				tCopy := t
 				p.workerPool.Go(func() {
 					defer wg.Done()
-					if err := p.writeBatch(ctxForWrites, t, dataBatch); err != nil {
+					if err := p.writeBatch(ctxForWrites, tCopy, dataBatch); err != nil {
 						p.logger.Error("error writing async batch",
-							zap.String("tenant", string(t)),
+							zap.String("tenant", string(tCopy)),
 							zap.Error(err))
 					}
 				})
@@ -302,6 +311,8 @@ func (p *promStorage) startAsync(_ context.Context) {
 	}()
 }
 
+// NB: M3 storage implements Write() in a syhcronous way, but we have to implement it in an async way
+//   to batch writes. Have to copy "query" instead of keeping a reference to it.
 func (p *promStorage) Write(ctx context.Context, query *storage.WriteQuery) error {
 	if query == nil {
 		return nil
@@ -310,7 +321,17 @@ func (p *promStorage) Write(ctx context.Context, query *storage.WriteQuery) erro
 		p.dupWrites.Inc(1)
 		return nil
 	}
-	p.queryQueue <- query
+	if query.Options().FromIngestor {
+		// We don't support writes from the ingestor.
+		p.ingestorWrites.Inc(1)
+	}
+	queryCopy, err := storage.NewWriteQuery(query.Options())
+	if err != nil {
+		p.logger.Error("error copying write", zap.Error(err),
+			zap.String("write", query.String()))
+		return err
+	}
+	p.queryQueue <- queryCopy
 	p.enqueued.Inc(1)
 	if query.Attributes().MetricsType == storagemetadata.AggregatedMetricsType {
 		p.enqueuedAggr.Inc(1)
@@ -324,6 +345,26 @@ func (p *promStorage) writeBatch(ctx context.Context, tenant tenantKey, queries 
 		p.logger.Debug("async write batch",
 			zap.String("tenant", string(tenant)),
 			zap.Int("size", len(queries)))
+	}
+	{
+		correctWq := make([]*storage.WriteQuery, 0, len(queries))
+		for _, wq := range queries {
+			correctTenant := p.getTenant(wq)
+			if correctTenant == tenant {
+				correctWq = append(correctWq, wq)
+			} else if rand.Float32() < 0.01 {
+				p.logger.Error("dropping a write because of a wrong tenant", 
+					zap.String("expected_tenant", string(correctTenant)),
+					zap.String("actual_tenant", string(tenant)),
+					zap.String("write", wq.String()),
+					zap.Bool("from_ingestor", wq.Options().FromIngestor),
+				)
+			}
+		}
+		queries = correctWq
+	}
+	if len(queries) == 0 {
+		return nil
 	}
 	encoded, err := convertAndEncodeWriteQuery(queries)
 	if err != nil {
