@@ -26,7 +26,6 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"math/rand"
 	"net/http"
 	"sync"
@@ -160,8 +159,9 @@ func NewStorage(opts Options) (storage.Storage, error) {
 		scope:           scope,
 		droppedWrites:   scope.Counter("dropped_writes"),
 		dupWrites:       scope.Counter("duplicate_writes"),
+		ingestorWrites:  scope.Counter("ingestor_writes"),
 		enqueued:        scope.Counter("enqueued"),
-		enqueuedAggr:    scope.Counter("enqueued_aggregated_samples"),
+		enqueueErr:      scope.Counter("enqueue_error"),
 		batchWrite:      scope.Counter("batch_write"),
 		batchWriteErr:   scope.Counter("batch_write_err"),
 		tickWrite:       scope.Counter("tick_write"),
@@ -172,6 +172,7 @@ func NewStorage(opts Options) (storage.Storage, error) {
 		noTenantFound:   scope.Counter("no_tenant_found"),
 		cancel:          cancel,
 		writeLoopDone:   make(chan struct{}),
+		wrongTenant:     scope.Counter("wrong_tenant"),
 	}
 	s.startAsync(ctx)
 	opts.logger.Info("Prometheus remote write storage created", zap.Int("num_tenants", len(queriesWithFixedTenants)))
@@ -186,8 +187,9 @@ type promStorage struct {
 	scope           tally.Scope
 	droppedWrites   tally.Counter
 	enqueued        tally.Counter
-	enqueuedAggr    tally.Counter
+	enqueueErr      tally.Counter
 	dupWrites       tally.Counter
+	ingestorWrites  tally.Counter
 	batchWrite      tally.Counter
 	batchWriteErr   tally.Counter
 	tickWrite       tally.Counter
@@ -198,6 +200,7 @@ type promStorage struct {
 	noTenantFound   tally.Counter
 	cancel          context.CancelFunc
 	writeLoopDone   chan struct{}
+	wrongTenant     tally.Counter
 }
 
 type tenantKey string
@@ -306,15 +309,35 @@ func (p *promStorage) Write(ctx context.Context, query *storage.WriteQuery) erro
 	if query == nil {
 		return nil
 	}
-	if query.DuplicateWrite() {
+	if query.Options().DuplicateWrite {
+		// M3 call site may write the same data according to different storage policies.
+		// See downsampleAndWriter in src/cmd/services/m3coordinator/ingest/write.go
 		p.dupWrites.Inc(1)
 		return nil
 	}
+	if query.Options().FromIngestor {
+		// src/cmd/services/m3coordinator/ingest/m3msg/ingest.go reuses a WriteQuery object to write different
+		// time series by calling ResetWriteQuery(). We need to make a copy of the WriteQuery object to avoid
+		// race conditions.
+		p.ingestorWrites.Inc(1)
+		queryCopy, err := storage.NewWriteQuery(storage.WriteQueryOptions{
+			// Only need Tags and DataPoints for writing to remote Prom. Other field are not used.
+			// See src/query/storage/promremote/query_coverter.go
+			// Unit is copeid to pass the validation in NewWriteQuery()
+			Tags:       query.Tags(),
+			Datapoints: query.Datapoints(),
+			Unit: 	    query.Unit(),
+		})
+		if err != nil {
+			p.enqueueErr.Inc(1)
+			p.logger.Error("error copying write", zap.Error(err),
+				zap.String("write", query.String()))
+			return err
+		}
+		query = queryCopy
+	}
 	p.queryQueue <- query
 	p.enqueued.Inc(1)
-	if query.Attributes().MetricsType == storagemetadata.AggregatedMetricsType {
-		p.enqueuedAggr.Inc(1)
-	}
 	return nil
 }
 
@@ -324,6 +347,32 @@ func (p *promStorage) writeBatch(ctx context.Context, tenant tenantKey, queries 
 		p.logger.Debug("async write batch",
 			zap.String("tenant", string(tenant)),
 			zap.Int("size", len(queries)))
+	}
+	// TODO: remove this double check once the bug is confirmed to be fixed.
+	{
+		correctWq := make([]*storage.WriteQuery, 0, len(queries))
+		wrongTenants := 0
+		for _, wq := range queries {
+			correctTenant := p.getTenant(wq)
+			if correctTenant == tenant {
+				correctWq = append(correctWq, wq)
+			} else {
+				wrongTenants++
+				if rand.Float32() < 0.01 {
+					p.logger.Error("dropping a write because of a wrong tenant",
+						zap.String("expected_tenant", string(correctTenant)),
+						zap.String("actual_tenant", string(tenant)),
+						zap.String("write", wq.String()),
+						zap.Bool("from_ingestor", wq.Options().FromIngestor),
+					)
+				}
+			}
+		}
+		p.wrongTenant.Inc(int64(wrongTenants))
+		queries = correctWq
+	}
+	if len(queries) == 0 {
+		return nil
 	}
 	encoded, err := convertAndEncodeWriteQuery(queries)
 	if err != nil {
@@ -419,7 +468,7 @@ func (p *promStorage) doRequest(req *http.Request) (int, error) {
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode/100 != 2 {
-		response, err := ioutil.ReadAll(resp.Body)
+		response, err := io.ReadAll(resp.Body)
 		if err != nil {
 			p.logger.Error("error reading body", zap.Error(err))
 			response = errorReadingBody
