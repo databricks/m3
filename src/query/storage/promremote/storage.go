@@ -214,6 +214,12 @@ func (p *promStorage) getTenant(query *storage.WriteQuery) tenantKey {
 func (p *promStorage) flushPendingQueues(minQueueSizeToFlush int, ctx context.Context, wg *sync.WaitGroup) int {
 	numWrites := 0
 	for t, queue := range p.pendingQuery {
+		if t != queue.t {
+			p.logger.Error("A write queue has a different tenant key than the map key",
+				zap.String("tenant", string(t)),
+				zap.String("queue_tenant", string(queue.t)),
+			)
+		}
 		if queue.Len() == 0 {
 			continue
 		}
@@ -267,11 +273,12 @@ func (p *promStorage) writeLoop() {
 			if dataBatch := p.pendingQuery[t].Add(query); dataBatch != nil {
 				p.batchWrite.Inc(int64(len(dataBatch)))
 				wg.Add(1)
+				tCopy := t
 				p.workerPool.Go(func() {
 					defer wg.Done()
-					if err := p.writeBatch(ctxForWrites, t, dataBatch); err != nil {
+					if err := p.writeBatch(ctxForWrites, tCopy, dataBatch); err != nil {
 						p.logger.Error("error writing async batch",
-							zap.String("tenant", string(t)),
+							zap.String("tenant", string(tCopy)),
 							zap.Error(err))
 					}
 				})
@@ -324,6 +331,22 @@ func (p *promStorage) writeBatch(ctx context.Context, tenant tenantKey, queries 
 		p.logger.Debug("async write batch",
 			zap.String("tenant", string(tenant)),
 			zap.Int("size", len(queries)))
+	}
+	{
+		correctWq := make([]*storage.WriteQuery, 0, len(queries))
+		for _, wq := range queries {
+			correctTenant := p.getTenant(wq)
+			if correctTenant == tenant {
+				correctWq = append(correctWq, wq)
+			} else if rand.Float32() < 0.001 {
+				p.logger.Error("dropping a write because of a wrong tenant", 
+					zap.String("expected_tenant", string(correctTenant)),
+					zap.String("actual_tenant", string(tenant)),
+					zap.String("write", wq.String()),
+				)
+			}
+		}
+		queries = correctWq
 	}
 	encoded, err := convertAndEncodeWriteQuery(queries)
 	if err != nil {
