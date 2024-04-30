@@ -325,6 +325,22 @@ func (p *promStorage) writeBatch(ctx context.Context, tenant tenantKey, queries 
 			zap.String("tenant", string(tenant)),
 			zap.Int("size", len(queries)))
 	}
+	if string(tenant) == "eng-dbfs" {
+		correctWq := make([]*storage.WriteQuery, 0, len(queries))
+		for _, wq := range queries {
+			correctTenant := p.getTenant(wq)
+			if correctTenant == tenant {
+				correctWq = append(correctWq, wq)
+			} else {
+				p.logger.Error("dropping a write because of a wrong tenant", 
+					zap.String("expected_tenant", string(correctTenant)),
+					zap.String("actual_tenant", string(tenant)),
+					zap.String("write", wq.String()),
+				)
+			}
+		}
+		queries = correctWq
+	}
 	encoded, err := convertAndEncodeWriteQuery(queries)
 	if err != nil {
 		p.batchWriteErr.Inc(1)
