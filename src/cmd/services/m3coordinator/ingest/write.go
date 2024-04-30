@@ -157,7 +157,6 @@ func NewDownsamplerAndWriter(
 	instrumentOpts instrument.Options,
 ) DownsamplerAndWriter {
 	scope := instrumentOpts.MetricsScope().SubScope("downsampler")
-
 	return &downsamplerAndWriter{
 		store:       store,
 		downsampler: downsampler,
