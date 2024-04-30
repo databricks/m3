@@ -113,8 +113,10 @@ type WriteOptions struct {
 }
 
 type downsamplerAndWriterMetrics struct {
-	dropped metricsBySource
-	written metricsBySource
+	dropped           metricsBySource
+	written           metricsBySource
+	writtenWithPolicy metricsBySource
+	policiesWritten   metricsBySource
 }
 
 type metricsBySource struct {
@@ -128,6 +130,14 @@ func (m metricsBySource) report(source ts.SourceType) {
 		counter = m.byUnknown
 	}
 	counter.Inc(1)
+}
+
+func (m metricsBySource) reportInc(source ts.SourceType, value int) {
+	counter, ok := m.bySource[source]
+	if !ok {
+		counter = m.byUnknown
+	}
+	counter.Inc(int64(value))
 }
 
 // downsamplerAndWriter encapsulates the logic for writing data to the downsampler,
@@ -156,6 +166,8 @@ func NewDownsamplerAndWriter(
 		metrics: downsamplerAndWriterMetrics{
 			dropped: newMetricsBySource(scope, "metrics_dropped"),
 			written: newMetricsBySource(scope, "metrics_written"),
+			writtenWithPolicy: newMetricsBySource(scope, "metrics_written_with_policy"),
+			policiesWritten: newMetricsBySource(scope, "metrics_policies_written"),
 		},
 	}
 }
@@ -365,9 +377,11 @@ func (d *downsamplerAndWriter) writeToStorage(
 		multiErr xerrors.MultiError
 		errLock  sync.Mutex
 	)
-
-	for _, p := range storagePolicies {
+	d.metrics.writtenWithPolicy.report(source)
+	d.metrics.policiesWritten.reportInc(source, len(storagePolicies))
+	for idx, p := range storagePolicies {
 		p := p // Capture for goroutine.
+		duplicateWrite := idx > 0
 
 		wg.Add(1)
 		d.workerPool.Go(func() {
@@ -381,6 +395,7 @@ func (d *downsamplerAndWriter) writeToStorage(
 				Unit:       unit,
 				Annotation: annotation,
 				Attributes: storageAttributesFromPolicy(p),
+				DuplicateWrite: duplicateWrite,
 			})
 			if err == nil {
 				err = d.store.Write(ctx, writeQuery)
@@ -450,8 +465,9 @@ func (d *downsamplerAndWriter) WriteBatch(
 
 			d.metrics.written.report(value.Attributes.Source)
 
-			for _, p := range storagePolicies {
+			for idx, p := range storagePolicies {
 				p := p // Capture for lambda.
+				duplicateWrite := idx > 0
 				wg.Add(1)
 				d.workerPool.Go(func() {
 					// NB(r): Allocate the write query at the top
@@ -464,6 +480,7 @@ func (d *downsamplerAndWriter) WriteBatch(
 						Unit:       value.Unit,
 						Annotation: value.Annotation,
 						Attributes: storageAttributesFromPolicy(p),
+						DuplicateWrite: duplicateWrite,
 					})
 					if err == nil {
 						err = d.store.Write(ctx, writeQuery)

@@ -108,3 +108,7 @@ func (q WriteQuery) Options() WriteQueryOptions {
 func (q *WriteQuery) String() string {
 	return string(q.opts.Tags.ID())
 }
+
+func (q *WriteQuery) DuplicateWrite() bool {
+	return q.opts.DuplicateWrite
+}
