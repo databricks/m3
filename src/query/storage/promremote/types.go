@@ -48,6 +48,7 @@ type Options struct {
 	tenantDefault string
 	tenantRules   []TenantRule
 	tickDuration  *time.Duration
+	queueTimeout  *time.Duration
 }
 
 // Namespaces returns M3 namespaces from endpoint opts.

@@ -135,6 +135,7 @@ func NewOptions(
 		tenantDefault: cfg.TenantDefault,
 		tenantRules:   tenantRules,
 		tickDuration:  cfg.TickDuration,
+		queueTimeout:  cfg.EnqueueTimeout,
 	}, nil
 }
 
@@ -163,8 +164,11 @@ func validateBackendConfiguration(cfg *config.PrometheusRemoteBackendConfigurati
 	if cfg.ConnectTimeout != nil && *cfg.ConnectTimeout < 0 {
 		return errors.New("connectTimeout can't be negative")
 	}
-	if cfg.TickDuration != nil && *cfg.TickDuration < 0 {
-		return errors.New("tickDuration can't be negative")
+	if cfg.TickDuration != nil && *cfg.TickDuration <= 0 {
+		return errors.New("tickDuration can't be non positive")
+	}
+	if cfg.EnqueueTimeout != nil && *cfg.EnqueueTimeout <= 0 {
+		return errors.New("enqueueTimeout can't be non positive")
 	}
 	requireTenantHeader := strings.TrimSpace(cfg.TenantDefault) != ""
 	seenNames := map[string]struct{}{}

@@ -856,6 +856,7 @@ type PrometheusRemoteBackendConfiguration struct {
 	PoolSize        int                                            `yaml:"poolSize" validate:"min=1"`
 	Retries         int                                            `yaml:"retries" validate:"min=0"`
 	TickDuration    *time.Duration                                 `yaml:"tickDuration"`
+	EnqueueTimeout  *time.Duration                                 `yaml:"enqueueTimeout"`
 }
 
 type PrometheusRemoteBackendEndpointHeader struct {
@@ -1007,6 +1008,6 @@ type MultiProcessConfiguration struct {
 type QueryShadowingConfiguration struct {
 	// Query paths like "/api/v1/query" are not included.
 	// No trailing slash.
-	ShadowQueryURL string `yaml:"shadowQueryURL"`
-	QueryShadowingWorkers int `yaml:"queryShadowingWorkers" validate:"nonzero,min=1"`
+	ShadowQueryURL        string `yaml:"shadowQueryURL"`
+	QueryShadowingWorkers int    `yaml:"queryShadowingWorkers" validate:"nonzero,min=1"`
 }

@@ -48,6 +48,7 @@ import (
 var (
 	logger, _    = zap.NewDevelopment()
 	tickDuration = time.Duration(100) * time.Millisecond
+	queueTimeout = time.Duration(10) * time.Second
 )
 
 func TestWrite(t *testing.T) {
@@ -63,6 +64,7 @@ func TestWrite(t *testing.T) {
 		queueSize:     1,
 		tenantDefault: "unknown",
 		tickDuration:  ptrDuration(tickDuration),
+		queueTimeout:  ptrDuration(queueTimeout),
 	})
 	require.NoError(t, err)
 
@@ -148,6 +150,7 @@ func TestDataRace(t *testing.T) {
 		queueSize:     100,
 		tenantDefault: "unknown",
 		tickDuration:  ptrDuration(tickDuration),
+		queueTimeout:  ptrDuration(queueTimeout),
 	})
 	require.NoError(t, err)
 
@@ -278,6 +281,7 @@ func TestWriteBasedOnRetention(t *testing.T) {
 			logger:        logger,
 			tenantDefault: "unknown",
 			tickDuration:  ptrDuration(tickDuration),
+			queueTimeout:  ptrDuration(queueTimeout),
 		})
 		require.NoError(t, err)
 		return promStorage
@@ -389,6 +393,7 @@ func TestErrorHandling(t *testing.T) {
 			logger:        logger,
 			tenantDefault: "unknown",
 			tickDuration:  ptrDuration(tickDuration),
+			queueTimeout:  ptrDuration(queueTimeout),
 		})
 		require.NoError(t, err)
 		return promStorage
@@ -420,7 +425,7 @@ func TestErrorHandling(t *testing.T) {
 			map[string]string{},
 		)
 		tallytest.AssertCounterValue(
-			t, 1, scope.Snapshot(), "test_scope.prom_remote_storage.dropped_samples",
+			t, 1, scope.Snapshot(), "test_scope.prom_remote_storage.failed_samples",
 			map[string]string{},
 		)
 	})
@@ -523,6 +528,7 @@ func LoadTestPromRemoteStorage(t *testing.T, jitter bool, numTenants, numSeries,
 		queueSize:     10,
 		tenantDefault: "unknown",
 		tickDuration:  ptrDuration(tickDuration),
+		queueTimeout:  ptrDuration(queueTimeout),
 		tenantRules:   tenantRules,
 	})
 	require.NoError(t, err)
@@ -568,13 +574,13 @@ func LoadTestPromRemoteStorage(t *testing.T, jitter bool, numTenants, numSeries,
 			map[string]string{},
 		)
 		tallytest.AssertCounterValue(
-			t, 0, scope.Snapshot(), "test_scope.prom_remote_storage.dropped_samples",
+			t, 0, scope.Snapshot(), "test_scope.prom_remote_storage.failed_samples",
 			map[string]string{},
 		)
 	} else {
 		// this MUST fail because of jitter we will have dropped_samples
 		tallytest.AssertCounterNonZero(
-			t, scope.Snapshot(), "test_scope.prom_remote_storage.dropped_samples",
+			t, scope.Snapshot(), "test_scope.prom_remote_storage.failed_samples",
 			map[string]string{},
 		)
 	}
