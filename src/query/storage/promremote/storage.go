@@ -118,6 +118,54 @@ func (wq *WriteQueue) Flush(ctx context.Context, p *promStorage) {
 	}
 }
 
+// introduce a dead letter queue to store the timed out samples from main queue
+// samples inside the dead letter queue are flushed to the remote endpoint at next tick
+// if dead letter queue is full, samples will be dropped to avoid cascading failures and retry storms
+type deadLetterQueue struct {
+	capacity int
+	queries  []*storage.WriteQuery
+
+	sync.Mutex
+}
+
+func newDeadLetterQueue(logger *zap.Logger, capacity int) *deadLetterQueue {
+	logger.Info("Creating a new dead letter queue", zap.Int("capacity", capacity))
+	return &deadLetterQueue{
+		capacity: capacity,
+		queries:  make([]*storage.WriteQuery, 0, capacity),
+	}
+}
+
+func (dlq *deadLetterQueue) size() int {
+	dlq.Lock()
+	defer dlq.Unlock()
+	return len(dlq.queries)
+}
+
+func (dlq *deadLetterQueue) add(query *storage.WriteQuery) error {
+	if query == nil {
+		return nil
+	}
+	dlq.Lock()
+	defer dlq.Unlock()
+	if len(dlq.queries) < dlq.capacity {
+		dlq.queries = append(dlq.queries, query)
+		return nil
+	} else {
+		return errors.New("dead letter queue is full")
+	}
+}
+
+func (dlq *deadLetterQueue) flush(p *promStorage, ctx context.Context, wg *sync.WaitGroup, pendingQuery map[tenantKey]*WriteQueue) {
+	dlq.Lock()
+	defer dlq.Unlock()
+	p.dlqSize.Update(float64(len(dlq.queries)))
+	for _, query := range dlq.queries {
+		p.appendSample(ctx, wg, pendingQuery, query)
+	}
+	dlq.queries = dlq.queries[:0] // empty the queue
+}
+
 func validateOptions(opts Options) error {
 	if opts.poolSize < 1 {
 		return errors.New("poolSize must be greater than 0")
@@ -155,9 +203,11 @@ func NewStorage(opts Options) (storage.Storage, error) {
 			queriesWithFixedTenants[tenant] = NewWriteQueue(tenant, opts.queueSize)
 		}
 	}
+	// large data queue size to avoid dropping samples
+	dataQueueCapacity := (opts.retries + 1) * len(opts.tenantRules) * opts.queueSize
+	opts.logger.Info("Creating data queue", zap.Int("capacity", dataQueueCapacity))
 	s := &promStorage{
 		opts:            opts,
-		isShadowMode:    opts.retries == 0, // If retries is 0, it is in shadow mode, don't return errors to upstream.
 		client:          client,
 		endpointMetrics: initEndpointMetrics(opts.endpoints, scope),
 		scope:           scope,
@@ -173,13 +223,15 @@ func NewStorage(opts Options) (storage.Storage, error) {
 		retryWrites:     scope.Counter("retry_writes"),
 		dupWrites:       scope.Counter("duplicate_writes"),
 		logger:          opts.logger,
-		dataQueue:       make(chan *storage.WriteQuery, len(opts.tenantRules)*opts.queueSize),
+		dataQueue:       make(chan *storage.WriteQuery, dataQueueCapacity),
 		dataQueueSize:   scope.Gauge("data_queue_size"),
+		dlq:             newDeadLetterQueue(opts.logger, dataQueueCapacity),
+		dlqSize:         scope.Gauge("dead_letter_queue_size"),
 		workerPool:      xsync.NewWorkerPool(opts.poolSize),
-		pendingQuery:    queriesWithFixedTenants,
 		writeLoopDone:   make(chan struct{}),
 	}
-	s.startAsync()
+	// carry over this queriesWithFixedTenants to make sure it is not concurrency safe
+	s.startAsync(queriesWithFixedTenants)
 	opts.logger.Info("Prometheus remote write storage created", zap.Int("num_tenants", len(queriesWithFixedTenants)))
 	return s, nil
 }
@@ -187,7 +239,6 @@ func NewStorage(opts Options) (storage.Storage, error) {
 type promStorage struct {
 	unimplementedPromStorageMethods
 	opts            Options
-	isShadowMode    bool
 	client          *http.Client
 	endpointMetrics map[string]*instrument.HttpMetrics
 	scope           tally.Scope
@@ -209,8 +260,9 @@ type promStorage struct {
 	logger        *zap.Logger
 	dataQueue     chan *storage.WriteQuery
 	dataQueueSize tally.Gauge
+	dlq           *deadLetterQueue
+	dlqSize       tally.Gauge
 	workerPool    xsync.WorkerPool
-	pendingQuery  map[tenantKey]*WriteQueue
 	writeLoopDone chan struct{}
 }
 
@@ -225,9 +277,34 @@ func (p *promStorage) getTenant(query *storage.WriteQuery) tenantKey {
 	return tenantKey(p.opts.tenantDefault)
 }
 
-func (p *promStorage) flushPendingQueues(ctx context.Context, wg *sync.WaitGroup) int {
+func (p *promStorage) appendSample(ctx context.Context, wg *sync.WaitGroup, pendingQuery map[tenantKey]*WriteQueue, query *storage.WriteQuery) {
+	t := p.getTenant(query)
+	if _, ok := pendingQuery[t]; !ok {
+		p.droppedWrites.Inc(1)
+		p.logger.Error("no pre-defined tenant found, dropping it",
+			zap.String("tenant", string(t)),
+			zap.String("defaultTenant", p.opts.tenantDefault),
+			zap.String("timeseries", query.String()))
+		return
+	}
+	if dataBatch := pendingQuery[t].Add(query); dataBatch != nil {
+		p.batchWrites.Inc(1)
+		wg.Add(1)
+		p.workerPool.Go(func() {
+			defer wg.Done()
+			if err := p.writeBatch(ctx, t, dataBatch); err != nil {
+				p.logger.Error("error writing async batch",
+					zap.String("tenant", string(t)),
+					zap.Error(err))
+			}
+		})
+	}
+}
+
+func (p *promStorage) flushPendingQueues(ctx context.Context, wg *sync.WaitGroup, pendingQuery map[tenantKey]*WriteQueue) int {
 	numWrites := 0
-	for _, queue := range p.pendingQuery {
+	p.dlq.flush(p, ctx, wg, pendingQuery)
+	for _, queue := range pendingQuery {
 		if queue.Len() == 0 {
 			continue
 		}
@@ -243,7 +320,7 @@ func (p *promStorage) flushPendingQueues(ctx context.Context, wg *sync.WaitGroup
 	return numWrites
 }
 
-func (p *promStorage) writeLoop() {
+func (p *promStorage) writeLoop(pendingQuery map[tenantKey]*WriteQueue) {
 	// This function ensures that all pending writes are flushed before returning.
 	ctxForWrites, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -261,35 +338,15 @@ func (p *promStorage) writeLoop() {
 				// This breaks out select instead of the for loop.
 				break
 			}
-			t := p.getTenant(query)
-			if _, ok := p.pendingQuery[t]; !ok {
-				p.droppedWrites.Inc(1)
-				p.logger.Error("no pre-defined tenant found, dropping it",
-					zap.String("tenant", string(t)),
-					zap.String("defaultTenant", p.opts.tenantDefault),
-					zap.String("timeseries", query.String()))
-				continue
-			}
-			if dataBatch := p.pendingQuery[t].Add(query); dataBatch != nil {
-				p.batchWrites.Inc(1)
-				wg.Add(1)
-				p.workerPool.Go(func() {
-					defer wg.Done()
-					if err := p.writeBatch(ctxForWrites, t, dataBatch); err != nil {
-						p.logger.Error("error writing async batch",
-							zap.String("tenant", string(t)),
-							zap.Error(err))
-					}
-				})
-			}
+			p.appendSample(ctxForWrites, &wg, pendingQuery, query)
 			break
 		case <-ticker.C:
-			p.flushPendingQueues(ctxForWrites, &wg)
+			p.flushPendingQueues(ctxForWrites, &wg, pendingQuery)
 		}
 	}
 	// At this point, `p.dataQueue` is drained and closed.
 	p.logger.Info("Draining pending per-tenant write queues")
-	numWrites := p.flushPendingQueues(ctxForWrites, &wg)
+	numWrites := p.flushPendingQueues(ctxForWrites, &wg, pendingQuery)
 	p.logger.Info("Waiting for all async pending writes to finish",
 		zap.Int("numWrites", numWrites))
 	// Block until all pending writes are flushed because we don't want to lose any data.
@@ -299,13 +356,13 @@ func (p *promStorage) writeLoop() {
 	p.writeLoopDone <- struct{}{}
 }
 
-func (p *promStorage) startAsync() {
+func (p *promStorage) startAsync(pendingQuery map[tenantKey]*WriteQueue) {
 	p.logger.Info("Start prometheus remote write storage async job",
 		zap.Int("queueSize", p.opts.queueSize),
 		zap.Int("poolSize", p.opts.poolSize))
 	go func() {
 		p.logger.Info("Starting the write loop")
-		p.writeLoop()
+		p.writeLoop(pendingQuery)
 	}()
 }
 
@@ -360,13 +417,8 @@ func (p *promStorage) Write(_ context.Context, query *storage.WriteQuery) error 
 		queryCopy, err := storage.NewWriteQuery(deepCopy(query.Options()))
 		if err != nil {
 			p.droppedSamples.Inc(samples)
-			if p.isShadowMode {
-				p.logger.Error("error copying write", zap.Error(err),
-					zap.String("write", query.String()))
-				return nil
-			} else {
-				return err
-			}
+			p.logger.Error("error copying write", zap.Error(err), zap.String("write", query.String()))
+			return nil
 		}
 		query = queryCopy
 	}
@@ -378,21 +430,20 @@ func (p *promStorage) Write(_ context.Context, query *storage.WriteQuery) error 
 		p.inFlightSamples.Update(float64(p.inFlightSampleValue.Add(samples)))
 		p.dataQueueSize.Update(float64(len(p.dataQueue)))
 	case <-time.After(*p.opts.queueTimeout):
-		err := errors.New("timeout waiting for data queue for " + p.opts.queueTimeout.String())
-		p.droppedSamples.Inc(samples)
-		if p.isShadowMode {
-			p.logger.Error("error enqueue samples for prom remote write", zap.Error(err),
-				zap.String("data", query.String()))
-		} else {
-			return err
+		err := p.dlq.add(query)
+		if err != nil {
+			p.droppedSamples.Inc(samples)
+			if rand.Float32() < logSamplingRate {
+				p.logger.Error("error enqueue samples for prom remote write", zap.Error(err),
+					zap.String("data", query.String()))
+			}
 		}
 	}
 	return nil
 }
 
 func (p *promStorage) writeBatch(ctx context.Context, tenant tenantKey, queries []*storage.WriteQuery) error {
-	logSampling := rand.Float32()
-	if logSampling < logSamplingRate {
+	if rand.Float32() < logSamplingRate {
 		p.logger.Debug("async write batch",
 			zap.String("tenant", string(tenant)),
 			zap.Int("size", len(queries)))

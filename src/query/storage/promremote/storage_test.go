@@ -375,6 +375,56 @@ func TestLoad(t *testing.T) {
 	})
 }
 
+func TestDeadLetterQueue(t *testing.T) {
+	// sever has high latency
+	svr := promremotetest.NewServer(t, true)
+	defer svr.Close()
+
+	attr := storagemetadata.Attributes{
+		MetricsType: storagemetadata.AggregatedMetricsType,
+		Retention:   720 * time.Hour,
+		Resolution:  5 * time.Minute,
+	}
+	runDLQTest := func(scope tally.Scope, tick, timeout time.Duration, iterations int) storage.Storage {
+		promStorage, err := NewStorage(Options{
+			endpoints:     []EndpointOptions{{name: "testEndpoint", address: svr.WriteAddr(), attributes: attr, tenantHeader: "TENANT"}},
+			poolSize:      1, // very small pool size
+			queueSize:     1, // very small queue size
+			scope:         scope,
+			logger:        logger,
+			tenantDefault: "unknown",
+			tickDuration:  ptrDuration(tick),
+			queueTimeout:  ptrDuration(timeout),
+		})
+		require.NoError(t, err)
+		for i := 0; i < iterations; i++ {
+			err := writeTestMetric(t, promStorage, attr)
+			require.NoError(t, err)
+		}
+		require.NoError(t, promStorage.Close())
+		return promStorage
+	}
+
+	t.Run("dead letter queue is full", func(t *testing.T) {
+		scope := tally.NewTestScope("test_scope", map[string]string{})
+		defer verifyMetrics(t, scope)
+		runDLQTest(scope, time.Hour, time.Millisecond, 100)
+		tallytest.AssertCounterNonZero(
+			t, scope.Snapshot(), "test_scope.prom_remote_storage.dropped_samples",
+			map[string]string{},
+		)
+	})
+
+	t.Run("large enqueue timeout", func(t *testing.T) {
+		scope := tally.NewTestScope("test_scope", map[string]string{})
+		defer verifyMetrics(t, scope)
+		runDLQTest(scope, time.Second, 5*time.Second, 10)
+		tallytest.AssertCounterValue(
+			t, 0, scope.Snapshot(), "test_scope.prom_remote_storage.dropped_samples",
+			map[string]string{},
+		)
+	})
+}
 func TestErrorHandling(t *testing.T) {
 	svr := promremotetest.NewServer(t, false)
 	defer svr.Close()
