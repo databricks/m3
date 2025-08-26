@@ -37,6 +37,7 @@ import (
 	xtime "github.com/m3db/m3/src/x/time"
 
 	"github.com/uber-go/tally"
+	"go.uber.org/zap"
 )
 
 var (
@@ -153,6 +154,7 @@ type downsamplerAndWriter struct {
 	store       storage.Storage
 	downsampler downsample.Downsampler
 	workerPool  xsync.PooledWorkerPool
+	logger      *zap.Logger
 
 	metrics downsamplerAndWriterMetrics
 }
@@ -173,6 +175,7 @@ func NewDownsamplerAndWriter(
 		store:       store,
 		downsampler: downsampler,
 		workerPool:  workerPool,
+		logger:      instrumentOpts.Logger(),
 		metrics: downsamplerAndWriterMetrics{
 			dropped:            newMetricsBySource(scope, "metrics_dropped"),
 			written:            newMetricsBySource(scope, "metrics_written"),
@@ -210,26 +213,35 @@ func (d *downsamplerAndWriter) Write(
 	overrides WriteOptions,
 	source ts.SourceType,
 ) error {
+	d.logger.Info("Write called", zap.Int("datapoints", len(datapoints)), zap.String("source", sourceTags[source]))
+	
 	var (
 		multiErr         = xerrors.NewMultiError()
 		dropUnaggregated bool
 	)
 
 	if d.shouldDownsample(overrides) {
+		d.logger.Debug("Write: downsampling enabled")
 		var err error
 		dropUnaggregated, err = d.writeToDownsampler(tags, datapoints, annotation, overrides)
 		if err != nil {
 			multiErr = multiErr.Add(err)
 		}
+	} else {
+		d.logger.Debug("Write: downsampling disabled")
 	}
 
 	if dropUnaggregated {
+		d.logger.Debug("Write: dropping unaggregated data")
 		d.metrics.dropped.report(source)
 	} else if d.shouldWrite(overrides) {
+		d.logger.Debug("Write: writing to storage")
 		err := d.writeToStorage(ctx, tags, datapoints, unit, annotation, overrides, source)
 		if err != nil {
 			multiErr = multiErr.Add(err)
 		}
+	} else {
+		d.logger.Debug("Write: skipping storage write")
 	}
 
 	return multiErr.FinalError()
@@ -436,6 +448,8 @@ func (d *downsamplerAndWriter) WriteBatch(
 	iter DownsampleAndWriteIter,
 	overrides WriteOptions,
 ) BatchError {
+	d.logger.Info("WriteBatch called")
+	
 	// Add timing instrumentation
 	totalStart := time.Now()
 	var aggregatedDuration, unaggregatedDuration, waitDuration time.Duration
@@ -452,8 +466,9 @@ func (d *downsamplerAndWriter) WriteBatch(
 	)
 
 	// Measure aggregated batch processing
+	aggregatedStart := time.Now()
 	if d.shouldDownsample(overrides) {
-		aggregatedStart := time.Now()
+		d.logger.Debug("WriteBatch: processing aggregated batch")
 		if errs := d.writeAggregatedBatch(iter, overrides); !errs.Empty() {
 			// Iterate and add through all the error to the multi error. It is
 			// ok not to use the addError method here as we are running single
@@ -462,10 +477,13 @@ func (d *downsamplerAndWriter) WriteBatch(
 				multiErr = multiErr.Add(err)
 			}
 		}
-		aggregatedDuration = time.Since(aggregatedStart)
-		// Record aggregated phase latency in milliseconds
-		d.metrics.aggregatedLatency.RecordDuration(aggregatedDuration)
+	} else {
+		d.logger.Debug("WriteBatch: skipping aggregated batch (downsampling disabled)")
 	}
+	aggregatedDuration = time.Since(aggregatedStart)
+	// Record aggregated phase latency (0 if no downsampling)
+	d.metrics.aggregatedLatency.RecordDuration(aggregatedDuration)
+	d.logger.Debug("WriteBatch: aggregated phase completed", zap.Duration("duration", aggregatedDuration))
 
 	// Reset the iter to write the unaggregated data.
 	resetErr := iter.Reset()
@@ -487,12 +505,14 @@ func (d *downsamplerAndWriter) WriteBatch(
 		for iter.Next() {
 			value := iter.Current()
 			if value.Metadata.DropUnaggregated {
+				d.logger.Debug("WriteBatch: dropping unaggregated data for series")
 				d.metrics.dropped.report(value.Attributes.Source)
 				continue
 			}
 
 			d.metrics.written.report(value.Attributes.Source)
 			if len(storagePolicies) > 1 {
+				d.logger.Debug("WriteBatch: multi-policy write", zap.Int("policies", len(storagePolicies)))
 				d.metrics.multiPolicyWritten.reportInc(value.Attributes.Source, len(storagePolicies))
 			}
 
@@ -503,6 +523,7 @@ func (d *downsamplerAndWriter) WriteBatch(
 				d.workerPool.Go(func() {
 					// Time individual store writes
 					storeWriteStart := time.Now()
+					d.logger.Debug("WriteBatch: starting store write goroutine")
 					// NB(r): Allocate the write query at the top
 					// of the pooled worker instead of need to pass
 					// the options down the stack which can cause
@@ -522,6 +543,9 @@ func (d *downsamplerAndWriter) WriteBatch(
 
 					// Record store write latency
 					d.metrics.storeWriteLatency.RecordDuration(storeWriteDuration)
+					d.logger.Debug("WriteBatch: store write completed", 
+						zap.Duration("duration", storeWriteDuration),
+						zap.Bool("error", err != nil))
 
 					if err != nil {
 						addError(err)
@@ -530,10 +554,17 @@ func (d *downsamplerAndWriter) WriteBatch(
 				})
 			}
 		}
+	} else {
+		if resetErr != nil {
+			d.logger.Debug("WriteBatch: skipping unaggregated batch due to reset error", zap.Error(resetErr))
+		} else if !d.shouldWrite(overrides) {
+			d.logger.Debug("WriteBatch: skipping unaggregated batch (writing disabled)")
+		}
 	}
 	unaggregatedDuration = time.Since(unaggregatedStart)
 	// Record unaggregated phase latency
 	d.metrics.unaggregatedLatency.RecordDuration(unaggregatedDuration)
+	d.logger.Debug("WriteBatch: unaggregated phase completed", zap.Duration("duration", unaggregatedDuration))
 
 	// Measure wait time
 	waitStart := time.Now()
@@ -545,6 +576,13 @@ func (d *downsamplerAndWriter) WriteBatch(
 	// Record total latency
 	totalDuration := time.Since(totalStart)
 	d.metrics.totalLatency.RecordDuration(totalDuration)
+
+	d.logger.Info("WriteBatch completed", 
+		zap.Duration("total_duration", totalDuration),
+		zap.Duration("aggregated_duration", aggregatedDuration),
+		zap.Duration("unaggregated_duration", unaggregatedDuration),
+		zap.Duration("wait_duration", waitDuration),
+		zap.Int("errors", multiErr.NumErrors()))
 
 	if multiErr.NumErrors() == 0 {
 		return nil
