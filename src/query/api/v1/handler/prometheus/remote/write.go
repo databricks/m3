@@ -305,7 +305,8 @@ func newPromWriteMetrics(scope tally.Scope) (promWriteMetrics, error) {
 func (h *PromWriteHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	batchRequestStopwatch := h.metrics.writeBatchLatency.Start()
 	defer batchRequestStopwatch.Stop()
-
+	logger := logging.WithContext(r.Context(), h.instrumentOpts)
+	logger.Info("In ServeHTTP")
 	checkedReq, err := h.checkedParseRequest(r)
 	if err != nil {
 		h.metrics.incError(err)
@@ -324,6 +325,7 @@ func (h *PromWriteHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// forwarding completes.
 	if targets := h.forwarding.Targets; len(targets) > 0 {
 		for _, target := range targets {
+			logger.Info("In forwarding targets " + target.URL)
 			target := target // Capture for lambda.
 			forward := func() {
 				now := h.nowFn()
@@ -367,6 +369,7 @@ func (h *PromWriteHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	logger.Info("About to write")
 	batchErr := h.write(r.Context(), req, opts)
 
 	// Record ingestion delay latency
