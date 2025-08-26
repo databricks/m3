@@ -23,6 +23,7 @@ package ingest
 import (
 	"context"
 	"sync"
+	"time"
 
 	"github.com/m3db/m3/src/cmd/services/m3coordinator/downsample"
 	"github.com/m3db/m3/src/metrics/policy"
@@ -116,6 +117,13 @@ type downsamplerAndWriterMetrics struct {
 	dropped            metricsBySource
 	written            metricsBySource
 	multiPolicyWritten metricsBySource
+
+	// Latency breakdown histograms
+	aggregatedLatency   tally.Histogram
+	unaggregatedLatency tally.Histogram
+	waitLatency         tally.Histogram
+	totalLatency        tally.Histogram
+	storeWriteLatency   tally.Histogram
 }
 
 type metricsBySource struct {
@@ -157,6 +165,10 @@ func NewDownsamplerAndWriter(
 	instrumentOpts instrument.Options,
 ) DownsamplerAndWriter {
 	scope := instrumentOpts.MetricsScope().SubScope("downsampler")
+
+	// Define histogram buckets for latency (milliseconds)
+	latencyBuckets := tally.MustMakeExponentialValueBuckets(1, 2, 20) // 1ms to ~1000s
+
 	return &downsamplerAndWriter{
 		store:       store,
 		downsampler: downsampler,
@@ -165,6 +177,13 @@ func NewDownsamplerAndWriter(
 			dropped:            newMetricsBySource(scope, "metrics_dropped"),
 			written:            newMetricsBySource(scope, "metrics_written"),
 			multiPolicyWritten: newMetricsBySource(scope, "metrics_multi_policy_written"),
+
+			// Latency breakdown histograms
+			aggregatedLatency:   scope.Histogram("write_aggregated_latency_ms", latencyBuckets),
+			unaggregatedLatency: scope.Histogram("write_unaggregated_latency_ms", latencyBuckets),
+			waitLatency:         scope.Histogram("write_wait_latency_ms", latencyBuckets),
+			totalLatency:        scope.Histogram("write_total_latency_ms", latencyBuckets),
+			storeWriteLatency:   scope.Histogram("store_write_latency_ms", latencyBuckets),
 		},
 	}
 }
@@ -417,6 +436,10 @@ func (d *downsamplerAndWriter) WriteBatch(
 	iter DownsampleAndWriteIter,
 	overrides WriteOptions,
 ) BatchError {
+	// Add timing instrumentation
+	totalStart := time.Now()
+	var aggregatedDuration, unaggregatedDuration, waitDuration time.Duration
+
 	var (
 		wg       sync.WaitGroup
 		multiErr xerrors.MultiError
@@ -428,7 +451,9 @@ func (d *downsamplerAndWriter) WriteBatch(
 		}
 	)
 
+	// Measure aggregated batch processing
 	if d.shouldDownsample(overrides) {
+		aggregatedStart := time.Now()
 		if errs := d.writeAggregatedBatch(iter, overrides); !errs.Empty() {
 			// Iterate and add through all the error to the multi error. It is
 			// ok not to use the addError method here as we are running single
@@ -437,6 +462,9 @@ func (d *downsamplerAndWriter) WriteBatch(
 				multiErr = multiErr.Add(err)
 			}
 		}
+		aggregatedDuration = time.Since(aggregatedStart)
+		// Record aggregated phase latency in milliseconds
+		d.metrics.aggregatedLatency.RecordDuration(aggregatedDuration)
 	}
 
 	// Reset the iter to write the unaggregated data.
@@ -445,6 +473,8 @@ func (d *downsamplerAndWriter) WriteBatch(
 		addError(resetErr)
 	}
 
+	// Measure unaggregated batch processing
+	unaggregatedStart := time.Now()
 	if d.shouldWrite(overrides) && resetErr == nil {
 		// Write unaggregated. Spin up all the background goroutines that make
 		// network requests before we do the synchronous work of writing to the
@@ -471,6 +501,8 @@ func (d *downsamplerAndWriter) WriteBatch(
 				duplicateWrite := idx > 0
 				wg.Add(1)
 				d.workerPool.Go(func() {
+					// Time individual store writes
+					storeWriteStart := time.Now()
 					// NB(r): Allocate the write query at the top
 					// of the pooled worker instead of need to pass
 					// the options down the stack which can cause
@@ -486,6 +518,11 @@ func (d *downsamplerAndWriter) WriteBatch(
 					if err == nil {
 						err = d.store.Write(ctx, writeQuery)
 					}
+					storeWriteDuration := time.Since(storeWriteStart)
+
+					// Record store write latency
+					d.metrics.storeWriteLatency.RecordDuration(storeWriteDuration)
+
 					if err != nil {
 						addError(err)
 					}
@@ -494,8 +531,21 @@ func (d *downsamplerAndWriter) WriteBatch(
 			}
 		}
 	}
+	unaggregatedDuration = time.Since(unaggregatedStart)
+	// Record unaggregated phase latency
+	d.metrics.unaggregatedLatency.RecordDuration(unaggregatedDuration)
 
+	// Measure wait time
+	waitStart := time.Now()
 	wg.Wait()
+	waitDuration = time.Since(waitStart)
+	// Record wait latency
+	d.metrics.waitLatency.RecordDuration(waitDuration)
+
+	// Record total latency
+	totalDuration := time.Since(totalStart)
+	d.metrics.totalLatency.RecordDuration(totalDuration)
+
 	if multiErr.NumErrors() == 0 {
 		return nil
 	}
