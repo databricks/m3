@@ -270,6 +270,10 @@ type promWriteMetrics struct {
 	forwardErrors            tally.Counter
 	forwardDropped           tally.Counter
 	forwardLatency           tally.Histogram
+
+	// Request processing latency breakdown
+	parseRequestLatency      tally.Histogram
+	writeLatency             tally.Histogram
 }
 
 func (m *promWriteMetrics) incError(err error) {
@@ -299,6 +303,10 @@ func newPromWriteMetrics(scope tally.Scope) (promWriteMetrics, error) {
 		forwardErrors:            scope.SubScope("forward").Counter("errors"),
 		forwardDropped:           scope.SubScope("forward").Counter("dropped"),
 		forwardLatency:           scope.SubScope("forward").Histogram("latency", buckets.WriteLatencyBuckets),
+
+		// Request processing latency breakdown
+		parseRequestLatency:      scope.SubScope("write").Histogram("parse-request-latency", buckets.WriteLatencyBuckets),
+		writeLatency:             scope.SubScope("write").Histogram("write-latency", buckets.WriteLatencyBuckets),
 	}, nil
 }
 
@@ -306,7 +314,11 @@ func (h *PromWriteHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	batchRequestStopwatch := h.metrics.writeBatchLatency.Start()
 	defer batchRequestStopwatch.Stop()
 
+	// Measure parse request latency
+	parseRequestStart := time.Now()
 	checkedReq, err := h.checkedParseRequest(r)
+	parseRequestDuration := time.Since(parseRequestStart)
+	h.metrics.parseRequestLatency.RecordDuration(parseRequestDuration)
 	if err != nil {
 		h.metrics.incError(err)
 		xhttp.WriteError(w, err)
@@ -367,7 +379,11 @@ func (h *PromWriteHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Measure write latency
+	writeStart := time.Now()
 	batchErr := h.write(r.Context(), req, opts)
+	writeDuration := time.Since(writeStart)
+	h.metrics.writeLatency.RecordDuration(writeDuration)
 
 	// Record ingestion delay latency
 	now := h.nowFn()
