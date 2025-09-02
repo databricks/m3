@@ -40,6 +40,7 @@ import (
 	xtime "github.com/m3db/m3/src/x/time"
 
 	"github.com/golang/snappy"
+	"github.com/uber-go/tally"
 )
 
 const (
@@ -62,9 +63,25 @@ type ParsePromCompressedRequestResult struct {
 	UncompressedBody []byte
 }
 
+// ParsePromCompressedRequestMetrics contains optional latency metrics
+// for tracking request parsing performance breakdown.
+type ParsePromCompressedRequestMetrics struct {
+	RequestStreamingLatency    tally.Histogram
+	RequestDecompressionLatency tally.Histogram
+}
+
 // ParsePromCompressedRequest parses a snappy compressed request from Prometheus.
 func ParsePromCompressedRequest(
 	r *http.Request,
+) (ParsePromCompressedRequestResult, error) {
+	return ParsePromCompressedRequestWithMetrics(r, nil)
+}
+
+// ParsePromCompressedRequestWithMetrics parses a snappy compressed request from Prometheus
+// with optional latency instrumentation to track streaming vs decompression time.
+func ParsePromCompressedRequestWithMetrics(
+	r *http.Request,
+	metrics *ParsePromCompressedRequestMetrics,
 ) (ParsePromCompressedRequestResult, error) {
 	body := r.Body
 	if r.Body == nil {
@@ -75,12 +92,26 @@ func ParsePromCompressedRequest(
 
 	defer body.Close()
 
+	// Measure streaming latency (time to read request body)
+	streamingStart := time.Now()
 	compressed, err := ioutil.ReadAll(body)
+	streamingDuration := time.Since(streamingStart)
+	if metrics != nil && metrics.RequestStreamingLatency != nil {
+		metrics.RequestStreamingLatency.RecordDuration(streamingDuration)
+	}
+
 	if err != nil {
 		return ParsePromCompressedRequestResult{}, err
 	}
 
+	// Measure decompression latency (time to decompress snappy data)
+	decompressionStart := time.Now()
 	reqBuf, err := snappy.Decode(nil, compressed)
+	decompressionDuration := time.Since(decompressionStart)
+	if metrics != nil && metrics.RequestDecompressionLatency != nil {
+		metrics.RequestDecompressionLatency.RecordDuration(decompressionDuration)
+	}
+
 	if err != nil {
 		return ParsePromCompressedRequestResult{},
 			xerrors.NewInvalidParamsError(err)
