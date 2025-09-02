@@ -124,7 +124,7 @@ ifeq ($(SERVICE),m3ctl)
 	make build-ui-ctl-statik-gen
 endif
 	@echo Building $(SERVICE)
-	$(GO_BUILD_COMMON_ENV) go build -mod=mod -ldflags '$(GO_BUILD_LDFLAGS)' -o $(BUILD)/$(SERVICE) ./src/cmd/services/$(SERVICE)/main/.
+	$(GO_BUILD_COMMON_ENV) go build -ldflags '$(GO_BUILD_LDFLAGS)' -o $(BUILD)/$(SERVICE) ./src/cmd/services/$(SERVICE)/main/.
 
 .PHONY: $(SERVICE)-linux-amd64
 $(SERVICE)-linux-amd64:
