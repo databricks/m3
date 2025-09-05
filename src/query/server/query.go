@@ -726,7 +726,13 @@ func Run(runOpts RunOptions) RunResult {
 	if cfg.HTTP.EnableH2C {
 		srvHandler = h2c.NewHandler(handler.Router(), &http2.Server{})
 	}
-	srv := &http.Server{Addr: listenAddress, Handler: srvHandler}
+	srv := &http.Server{
+		Addr:         listenAddress,
+		Handler:      srvHandler,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
 	defer func() {
 		logger.Info("closing server")
 		if err := srv.Shutdown(context.Background()); err != nil {
