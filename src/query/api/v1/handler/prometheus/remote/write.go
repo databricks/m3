@@ -270,6 +270,9 @@ type promWriteMetrics struct {
 	forwardErrors            tally.Counter
 	forwardDropped           tally.Counter
 	forwardLatency           tally.Histogram
+
+	requestStreamingLatency  tally.Histogram
+	requestDecompressionLatency tally.Histogram
 }
 
 func (m *promWriteMetrics) incError(err error) {
@@ -299,6 +302,8 @@ func newPromWriteMetrics(scope tally.Scope) (promWriteMetrics, error) {
 		forwardErrors:            scope.SubScope("forward").Counter("errors"),
 		forwardDropped:           scope.SubScope("forward").Counter("dropped"),
 		forwardLatency:           scope.SubScope("forward").Histogram("latency", buckets.WriteLatencyBuckets),
+		requestStreamingLatency:  scope.SubScope("write").Histogram("request-streaming-latency", buckets.WriteLatencyBuckets),
+		requestDecompressionLatency: scope.SubScope("write").Histogram("request-decompression-latency", buckets.WriteLatencyBuckets),
 	}, nil
 }
 
@@ -528,7 +533,11 @@ func (h *PromWriteHandler) parseRequest(
 		}
 	}
 
-	result, err := prometheus.ParsePromCompressedRequest(r)
+	metrics := &prometheus.ParsePromCompressedRequestMetrics{
+		RequestStreamingLatency:     h.metrics.requestStreamingLatency,
+		RequestDecompressionLatency: h.metrics.requestDecompressionLatency,
+	}
+	result, err := prometheus.ParsePromCompressedRequestWithMetrics(r, metrics)
 	if err != nil {
 		return parseRequestResult{}, err
 	}

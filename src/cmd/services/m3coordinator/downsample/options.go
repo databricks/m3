@@ -491,6 +491,9 @@ type RollupRuleConfiguration struct {
 	// Tags are the tags to be added to the metric while applying the rollup
 	// rule. Users are free to add name/value combinations to the metric.
 	Tags []Tag `yaml:"tags"`
+
+	// KeepOriginal is optional.
+	KeepOriginal bool `yaml:"keepOriginal"`
 }
 
 // Rule returns the rollup rule for the rollup rule configuration.
@@ -603,11 +606,12 @@ func (r RollupRuleConfiguration) Rule() (view.RollupRule, error) {
 	}
 
 	return view.RollupRule{
-		ID:      id,
-		Name:    name,
-		Filter:  filter,
-		Targets: targets,
-		Tags:    tags,
+		ID:           id,
+		Name:         name,
+		Filter:       filter,
+		Targets:      targets,
+		Tags:         tags,
+		KeepOriginal: r.KeepOriginal,
 	}, nil
 }
 
